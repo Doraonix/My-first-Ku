@@ -152,7 +152,9 @@ filters.addEventListener("change", () => {
   resultList.replaceChildren();
   recommendationSelection = null;
   resetRecipeDetail("条件已修改，请重新推荐后查看菜品详情。");
-  resultNote.textContent = "条件已修改，请点击“看看能做什么”重新推荐。";
+  resultNote.textContent = selectedValues("main-ingredient").length
+    ? "条件已修改，请点击“看看能做什么”重新推荐。"
+    : "请至少选择一种主要食材；只选择调料还不能推荐。";
 });
 
 function updateDetailFavoriteButton() {

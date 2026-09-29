@@ -233,6 +233,60 @@ test('真实 app.js 的详情与收藏连接（仅内存 DOM 和存储）', asyn
     assert.equal(page.byId('favorites-list').querySelectorAll('article').length, 1);
     assert.equal(page.byId('favorites-retry').hidden, true);
   });
+  await t.test('仅勾选盐就提醒缺少主要食材，推荐按钮仍可点击', async () => {
+    const page = await boot(makeStorage());
+    const salt = page.byId('seasonings').querySelectorAll('input').find((input) => input.value === '盐');
+    assert.ok(salt);
+    salt.checked = true; salt.emit('change');
+
+    assert.equal(page.byId('results-note').textContent, '请至少选择一种主要食材；只选择调料还不能推荐。');
+    assert.equal(page.byId('recipe-list').children.length, 0);
+    assert.equal(page.byId('recommend-button').disabled, false);
+    page.byId('recommend-button').click();
+    assert.equal(page.byId('results-note').textContent, '请至少选择一种主要食材；只选择调料还不能推荐。');
+    assert.equal(page.byId('recipe-list').children.length, 0);
+  });
+  await t.test('仅选盐后再选番茄恢复重新推荐提示，推荐和详情仍正常', async () => {
+    const page = await boot(makeStorage());
+    const salt = page.byId('seasonings').querySelectorAll('input').find((input) => input.value === '盐');
+    assert.ok(salt);
+    salt.checked = true; salt.emit('change');
+    assert.equal(page.byId('results-note').textContent, '请至少选择一种主要食材；只选择调料还不能推荐。');
+
+    page.choose(['番茄']);
+    assert.equal(page.byId('results-note').textContent, '条件已修改，请点击“看看能做什么”重新推荐。');
+    assert.equal(page.byId('recipe-list').children.length, 0);
+    assert.equal(page.byId('recommend-button').disabled, false);
+    page.open(data.recipes[0]);
+    assert.match(page.byId('results-note').textContent, /找到 \d+ 道菜/);
+    assert.equal(page.byId('recipe-detail-content').dataset.recipeId, data.recipes[0].id);
+    assert.deepEqual(page.byId('recipe-detail-content').querySelector('ol').children.map((step) => step.textContent), data.recipes[0].steps);
+  });
+  await t.test('取消最后一个主要食材立即提醒，并清空旧推荐和详情', async () => {
+    const page = await boot(makeStorage());
+    page.choose(['番茄']); page.open(data.recipes[0]);
+    assert.ok(page.byId('recipe-list').children.length > 0);
+    const currentDetail = page.byId('recipe-detail-content');
+    assert.equal(currentDetail.dataset.recipeId, data.recipes[0].id);
+
+    page.choose([]);
+    assert.equal(page.byId('results-note').textContent, '请至少选择一种主要食材；只选择调料还不能推荐。');
+    assert.equal(page.byId('recipe-list').children.length, 0);
+    assert.equal(currentDetail.dataset.recipeId, undefined);
+    assert.equal(currentDetail.textContent, '条件已修改，请重新推荐后查看菜品详情。');
+    assert.equal(currentDetail.querySelector('button'), null);
+    assert.equal(page.byId('recommend-button').disabled, false);
+  });
+  await t.test('无主要食材时只修改难度也立即显示选材提醒', async () => {
+    const page = await boot(makeStorage());
+    const choices = page.byId('recipe-filters').querySelectorAll('input[name="difficulty"]');
+    for (const input of choices) input.checked = input.value === '简单';
+    choices.find((input) => input.checked).emit('change');
+
+    assert.equal(page.byId('results-note').textContent, '请至少选择一种主要食材；只选择调料还不能推荐。');
+    assert.equal(page.byId('recipe-list').children.length, 0);
+    assert.equal(page.byId('recommend-button').disabled, false);
+  });
 });
 
 test('菜品加载失败时食材区不再停留在加载中', async (t) => {
