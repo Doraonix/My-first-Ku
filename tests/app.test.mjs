@@ -138,7 +138,7 @@ test('真实 app.js 的详情与收藏连接（仅内存 DOM 和存储）', asyn
     }
     if (recipe.difficultyReason) assert.ok(text.includes(recipe.difficultyReason));
     for (const line of card.querySelector('.missing-summary').children) assert.ok(text.includes(line.textContent));
-    const favorite = detail.querySelector('button');
+    const favorite = detail.querySelector('.detail-favorite');
     assert.equal(favorite.textContent, '收藏'); assert.equal(favorite.disabled, false);
   });
 
@@ -161,9 +161,9 @@ test('真实 app.js 的详情与收藏连接（仅内存 DOM 和存储）', asyn
   });
 
   await t.test('收藏成功后列表与详情同步，多次查看不重复添加', () => {
-    choose(['番茄']); open(data.recipes[0]); detail.querySelector('button').click();
+    choose(['番茄']); open(data.recipes[0]); detail.querySelector('.detail-favorite').click();
     assert.deepEqual(JSON.parse(storage.entries.get(FAVORITES_KEY)), ['recipe-001']);
-    assert.equal(detail.querySelector('button').textContent, '取消收藏');
+    assert.equal(detail.querySelector('.detail-favorite').textContent, '取消收藏');
     open(data.recipes[0]); open(data.recipes[0]);
     assert.equal(byId('favorites-list').querySelectorAll('article').length, 1);
   });
@@ -179,20 +179,20 @@ test('真实 app.js 的详情与收藏连接（仅内存 DOM 和存储）', asyn
   });
   await t.test('从收藏列表取消时同步详情，原菜品仍可推荐', () => {
     byId('favorites-list').querySelectorAll('button')[1].click();
-    assert.equal(detail.querySelector('button').textContent, '收藏');
+    assert.equal(detail.querySelector('.detail-favorite').textContent, '收藏');
     assert.match(byId('favorites-list').textContent, /还没有收藏的菜/);
     assert.deepEqual(JSON.parse(storage.entries.get(FAVORITES_KEY)), []);
     choose(['番茄']); assert.ok(open(data.recipes[0]));
   });
   await t.test('模拟重新打开后保留收藏，取消后再次打开仍为空', async () => {
-    detail.querySelector('button').click();
+    detail.querySelector('.detail-favorite').click();
     const reopened = await boot(storage);
     assert.equal(reopened.byId('favorites-list').querySelectorAll('article').length, 1);
     reopened.byId('favorites-list').querySelector('button').click();
     const reopenedDetail = reopened.byId('recipe-detail-content');
     assert.equal(reopenedDetail.querySelector('.missing-summary'), null);
-    assert.equal(reopenedDetail.querySelector('button').textContent, '取消收藏');
-    reopenedDetail.querySelector('button').click();
+    assert.equal(reopenedDetail.querySelector('.detail-favorite').textContent, '取消收藏');
+    reopenedDetail.querySelector('.detail-favorite').click();
     const again = await boot(storage);
     assert.match(again.byId('favorites-list').textContent, /还没有收藏的菜/);
   });
@@ -200,7 +200,7 @@ test('真实 app.js 的详情与收藏连接（仅内存 DOM 和存储）', asyn
     const failing = makeStorage(); failing.failWrite = true;
     const page = await boot(failing);
     page.choose(['番茄']); page.open(data.recipes[0]);
-    const button = page.byId('recipe-detail-content').querySelector('button');
+    const button = page.byId('recipe-detail-content').querySelector('.detail-favorite');
     const retry = page.byId('favorites-retry');
     button.click();
     assert.equal(button.textContent, '收藏');
@@ -225,11 +225,11 @@ test('真实 app.js 的详情与收藏连接（仅内存 DOM 和存储）', asyn
     assert.match(page.byId('favorites-status').textContent, /读取失败/);
     assert.ok(!page.byId('favorites-list').textContent.includes('还没有收藏'));
     page.choose(['番茄']); page.open(data.recipes[0]);
-    assert.equal(page.byId('recipe-detail-content').querySelector('button').disabled, true);
+    assert.equal(page.byId('recipe-detail-content').querySelector('.detail-favorite').disabled, true);
     assert.equal(damaged.getItem(FAVORITES_KEY), '{broken');
     damaged.entries.set(FAVORITES_KEY, '["recipe-001"]');
     page.byId('favorites-retry').click();
-    assert.equal(page.byId('recipe-detail-content').querySelector('button').textContent, '取消收藏');
+    assert.equal(page.byId('recipe-detail-content').querySelector('.detail-favorite').textContent, '取消收藏');
     assert.equal(page.byId('favorites-list').querySelectorAll('article').length, 1);
     assert.equal(page.byId('favorites-retry').hidden, true);
   });
@@ -286,6 +286,149 @@ test('真实 app.js 的详情与收藏连接（仅内存 DOM 和存储）', asyn
     assert.equal(page.byId('results-note').textContent, '请至少选择一种主要食材；只选择调料还不能推荐。');
     assert.equal(page.byId('recipe-list').children.length, 0);
     assert.equal(page.byId('recommend-button').disabled, false);
+  });
+  await t.test('做法默认完整展开，按钮文字与关联状态一致', async () => {
+    const page = await boot(makeStorage());
+    const recipe = data.recipes[0];
+    page.choose(recipe.mainIngredients.map(({ name }) => name)); page.open(recipe);
+    const currentDetail = page.byId('recipe-detail-content');
+    const steps = currentDetail.querySelector('#recipe-steps');
+    const toggle = currentDetail.querySelector('.steps-toggle');
+
+    assert.equal(steps.tagName, 'OL');
+    assert.equal(steps.hidden, false);
+    assert.deepEqual(steps.children.map((step) => step.textContent), recipe.steps);
+    assert.equal(toggle.tagName, 'BUTTON');
+    assert.equal(toggle.className, 'button button-secondary steps-toggle');
+    assert.equal(toggle.type, 'button');
+    assert.equal(toggle.textContent, '收起做法');
+    assert.equal(toggle['aria-expanded'], 'true');
+    assert.equal(toggle['aria-controls'], steps.id);
+    assert.equal(currentDetail.querySelector('.detail-favorite').textContent, '收藏');
+  });
+  await t.test('收起只隐藏做法列表，材料、说明、安全提醒和收藏入口保留', async () => {
+    const page = await boot(makeStorage());
+    const recipe = data.recipes[0];
+    page.choose(recipe.mainIngredients.map(({ name }) => name)); page.open(recipe);
+    const currentDetail = page.byId('recipe-detail-content');
+    const steps = currentDetail.querySelector('#recipe-steps');
+    const toggle = currentDetail.querySelector('.steps-toggle');
+    const originalNodes = currentDetail.descendants();
+    const originalText = currentDetail.textContent;
+
+    toggle.click();
+    assert.equal(steps.hidden, true);
+    assert.equal(toggle.textContent, '展开做法');
+    assert.equal(toggle['aria-expanded'], 'false');
+    assert.equal(toggle['aria-controls'], steps.id);
+    assert.deepEqual(currentDetail.descendants(), originalNodes);
+    assert.equal(currentDetail.textContent, originalText.replace('收起做法', '展开做法'));
+    assert.deepEqual(steps.children.map((step) => step.textContent), recipe.steps);
+    for (const node of [currentDetail, ...originalNodes.filter((node) => node !== steps)]) {
+      assert.notEqual(node.hidden, true, '仅做法列表本身可被隐藏');
+    }
+    for (const material of [...recipe.mainIngredients, ...recipe.seasonings]) {
+      assert.ok(currentDetail.textContent.includes(`${material.name}：${material.amount}`));
+    }
+    for (const note of [...data.notes, ...data.safetyNotes]) assert.ok(currentDetail.textContent.includes(note));
+    assert.equal(currentDetail.querySelector('.detail-favorite').textContent, '收藏');
+    assert.equal(currentDetail.querySelector('.detail-favorite').disabled, false);
+  });
+  await t.test('连续点击十次开合不重复创建节点，文字和展开状态同步', async () => {
+    const page = await boot(makeStorage());
+    const recipe = data.recipes[0];
+    page.choose(recipe.mainIngredients.map(({ name }) => name)); page.open(recipe);
+    const currentDetail = page.byId('recipe-detail-content');
+    const steps = currentDetail.querySelector('#recipe-steps');
+    const toggle = currentDetail.querySelector('.steps-toggle');
+    const originalNodes = currentDetail.descendants();
+
+    for (let click = 1; click <= 10; click++) {
+      toggle.click();
+      const collapsed = click % 2 === 1;
+      assert.equal(steps.hidden, collapsed);
+      assert.equal(toggle.textContent, collapsed ? '展开做法' : '收起做法');
+      assert.equal(toggle['aria-expanded'], String(!collapsed));
+      assert.equal(toggle['aria-controls'], steps.id);
+      assert.deepEqual(currentDetail.descendants(), originalNodes);
+      assert.equal(currentDetail.querySelectorAll('#recipe-steps').length, 1);
+      assert.equal(currentDetail.querySelectorAll('.steps-toggle').length, 1);
+      assert.equal(currentDetail.querySelectorAll('button').length, 2);
+      assert.deepEqual(steps.children.map((step) => step.textContent), recipe.steps);
+    }
+  });
+  await t.test('直接切换推荐菜和重新打开详情恢复展开，筛选后清空开合入口', async () => {
+    const page = await boot(makeStorage());
+    const [first, second] = data.recipes;
+    page.choose([...new Set(data.recipes.flatMap((recipe) => recipe.mainIngredients.map(({ name }) => name)))]);
+    page.byId('recommend-button').click();
+    const cards = page.byId('recipe-list').children;
+    const currentDetail = page.byId('recipe-detail-content');
+    for (const recipe of [first, second, first, first]) {
+      const card = cards.find((node) => node.dataset.recipeId === recipe.id);
+      assert.ok(card, `应推荐 ${recipe.name}`);
+      card.querySelector('button').click();
+      const steps = currentDetail.querySelector('#recipe-steps');
+      const toggle = currentDetail.querySelector('.steps-toggle');
+      assert.equal(currentDetail.dataset.recipeId, recipe.id);
+      assert.equal(steps.hidden, false);
+      assert.deepEqual(steps.children.map((step) => step.textContent), recipe.steps);
+      assert.equal(toggle.textContent, '收起做法');
+      assert.equal(toggle['aria-expanded'], 'true');
+      toggle.click();
+      assert.equal(steps.hidden, true);
+    }
+
+    page.choose(['番茄']);
+    assert.equal(page.byId('recipe-list').children.length, 0);
+    assert.equal(currentDetail.dataset.recipeId, undefined);
+    assert.equal(currentDetail.textContent, '条件已修改，请重新推荐后查看菜品详情。');
+    assert.equal(currentDetail.querySelector('#recipe-steps'), null);
+    assert.equal(currentDetail.querySelector('button'), null);
+  });
+  await t.test('收起时收藏和取消仍同步，开合本身不写入本地存储', async () => {
+    const isolatedStorage = makeStorage();
+    const writes = [];
+    const setItem = isolatedStorage.setItem;
+    isolatedStorage.setItem = function (key, value) { writes.push([key, value]); setItem.call(this, key, value); };
+    const page = await boot(isolatedStorage);
+    const recipe = data.recipes[0];
+    page.choose(recipe.mainIngredients.map(({ name }) => name)); page.open(recipe);
+    const currentDetail = page.byId('recipe-detail-content');
+    let steps = currentDetail.querySelector('#recipe-steps');
+    let toggle = currentDetail.querySelector('.steps-toggle');
+    assert.deepEqual(writes, []);
+
+    toggle.click();
+    assert.equal(steps.hidden, true);
+    assert.deepEqual(writes, []);
+    assert.equal(isolatedStorage.getItem(FAVORITES_KEY), null);
+    currentDetail.querySelector('.detail-favorite').click();
+    assert.equal(steps.hidden, true);
+    assert.equal(toggle.textContent, '展开做法');
+    assert.equal(toggle['aria-expanded'], 'false');
+    assert.equal(currentDetail.querySelector('.detail-favorite').textContent, '取消收藏');
+    assert.equal(page.byId('favorites-list').querySelectorAll('article').length, 1);
+    assert.deepEqual(writes, [[FAVORITES_KEY, JSON.stringify([recipe.id])]]);
+
+    toggle.click(); toggle.click();
+    assert.equal(steps.hidden, true);
+    assert.deepEqual(writes, [[FAVORITES_KEY, JSON.stringify([recipe.id])]]);
+    page.byId('favorites-list').querySelector('button').click();
+    steps = currentDetail.querySelector('#recipe-steps');
+    toggle = currentDetail.querySelector('.steps-toggle');
+    assert.equal(steps.hidden, false);
+    assert.equal(toggle.textContent, '收起做法');
+    assert.equal(toggle['aria-expanded'], 'true');
+    toggle.click();
+    currentDetail.querySelector('.detail-favorite').click();
+    assert.equal(steps.hidden, true);
+    assert.equal(toggle.textContent, '展开做法');
+    assert.equal(toggle['aria-expanded'], 'false');
+    assert.equal(currentDetail.querySelector('.detail-favorite').textContent, '收藏');
+    assert.match(page.byId('favorites-list').textContent, /还没有收藏的菜/);
+    assert.deepEqual(writes, [[FAVORITES_KEY, JSON.stringify([recipe.id])], [FAVORITES_KEY, '[]']]);
+    assert.deepEqual(JSON.parse(isolatedStorage.getItem(FAVORITES_KEY)), []);
   });
 });
 

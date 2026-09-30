@@ -64,6 +64,7 @@ button.button-secondary:enabled:hover { background: #eaf0e6; }
 .support-grid { margin-top: 32px; align-items: start; }
 .detail-header, .detail-section { margin-top: 20px; }
 .detail-section h4 { font-size: 16px; }
+.steps-toggle { margin-top: 8px; }
 .detail-section ul, .detail-section ol { margin: 8px 0 0; padding-left: 1.4em; }
 .detail-section li + li { margin-top: 8px; }
 .detail-context { margin-block: 16px; color: var(--muted); font-size: 14px; }

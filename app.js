@@ -68,6 +68,24 @@ function detailList(title, items, ordered = false) {
   return section;
 }
 
+function recipeSteps(recipe) {
+  const section = detailList("做法步骤", recipe.steps, true);
+  const steps = section.querySelector("ol");
+  steps.id = "recipe-steps";
+  steps.hidden = false;
+  const toggle = element("button", "button button-secondary steps-toggle", "收起做法");
+  toggle.type = "button";
+  toggle.setAttribute("aria-controls", steps.id);
+  toggle.setAttribute("aria-expanded", "true");
+  toggle.addEventListener("click", () => {
+    steps.hidden = !steps.hidden;
+    toggle.textContent = steps.hidden ? "展开做法" : "收起做法";
+    toggle.setAttribute("aria-expanded", String(!steps.hidden));
+  });
+  section.replaceChildren(section.querySelector("h4"), toggle, steps);
+  return section;
+}
+
 function resetRecipeDetail(message = "请从推荐结果或收藏中选择一道菜，查看完整材料和做法。") {
   activeDetail = null;
   detailContent.replaceChildren(element("p", "placeholder", message));
@@ -95,7 +113,7 @@ function showRecipeDetail(match) {
   detailContent.append(
     detailList("主要食材与用量", recipe.mainIngredients.map((item) => `${item.name}：${item.amount}`)),
     detailList("调料与用量", recipe.seasonings.map((item) => `${item.name}：${item.amount}`)),
-    detailList("做法步骤", recipe.steps, true),
+    recipeSteps(recipe),
     detailList("用量与烹调说明", recipeNotes),
     detailList("安全提醒", safetyNotes),
   );
