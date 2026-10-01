@@ -44,6 +44,7 @@ legend { margin-bottom: 8px; padding: 0; font-weight: 600; }
 .choice:has(input:enabled) { cursor: pointer; }
 fieldset:disabled .choice { cursor: not-allowed; }
 .filter-actions { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 24px; margin-top: 28px; padding-top: 24px; border-top: 1px solid var(--border); }
+.filter-buttons { display: flex; flex-wrap: wrap; gap: 12px; }
 .button { display: inline-flex; justify-content: center; align-items: center; min-height: 44px; padding: 10px 18px; border: 1px solid transparent; border-radius: 10px; font-size: 14px; font-weight: 600; text-decoration: none; cursor: pointer; }
 .button-primary { color: #fff; background: var(--green); }
 .button-secondary { color: var(--green); background: transparent; border-color: #b6c2b7; }
@@ -94,6 +95,6 @@ button.button-secondary:enabled:hover { background: #eaf0e6; }
   .panel, .recipe-card { padding: 20px; }
   .ingredient-grid, .recipe-grid, .support-grid { grid-template-columns: 1fr; }
   .ingredient-grid { gap: 24px; }
-  .filter-actions > .button { width: 100%; }
+  .filter-buttons, .filter-buttons > .button { width: 100%; }
   .results-section { margin-top: 32px; }
 }

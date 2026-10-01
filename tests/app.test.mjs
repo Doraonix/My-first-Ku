@@ -59,6 +59,7 @@ function makeDocument() {
     Object.assign(input, { type: 'radio', name: 'difficulty', value, checked: value === 'all' });
   }
   add('button', 'recommend-button', filters).disabled = true;
+  add('button', 'clear-filters-button', filters).disabled = true;
   for (const id of ['recipe-list', 'results-note', 'results-heading', 'preview-notice']) add('div', id);
   const section = add('section', 'recipe-detail');
   add('h2', 'detail-heading', section); add('div', 'recipe-detail-content', section);
@@ -100,6 +101,7 @@ test('真实 app.js 的详情与收藏连接（仅内存 DOM 和存储）', asyn
     await new Promise(setImmediate);
     const byId = (id) => document.getElementById(id);
     assert.equal(byId('recommend-button').disabled, false);
+    assert.equal(byId('clear-filters-button').disabled, false);
     const choose = (names) => {
       for (const input of byId('recipe-filters').querySelectorAll('input[name="main-ingredient"]')) input.checked = names.includes(input.value);
       byId('recipe-filters').emit('change');
@@ -112,6 +114,15 @@ test('真实 app.js 的详情与收藏连接（仅内存 DOM 和存储）', asyn
       return card;
     };
     return { byId, choose, open };
+  };
+  const assertTomatoResults = (page) => {
+    const cards = page.byId('recipe-list').children;
+    assert.deepEqual(cards.map((card) => card.querySelector('h3').textContent), ['番茄炒蛋', '番茄鸡蛋炖豆腐']);
+    assert.deepEqual(cards.map((card) => card.querySelector('.missing-summary').children.map((line) => line.textContent)), [
+      ['缺少 1 种主要食材：鸡蛋', '缺少调料：食用油、盐'],
+      ['缺少 2 种主要食材：北豆腐、鸡蛋', '缺少调料：食用油、盐、生抽'],
+    ]);
+    assert.match(page.byId('results-note').textContent, /^找到 2 道菜：/);
   };
   const storage = makeStorage();
   const { byId, choose, open } = await boot(storage);
@@ -287,6 +298,88 @@ test('真实 app.js 的详情与收藏连接（仅内存 DOM 和存储）', asyn
     assert.equal(page.byId('recipe-list').children.length, 0);
     assert.equal(page.byId('recommend-button').disabled, false);
   });
+  await t.test('筛选有结果：只选番茄时按顺序显示两道菜及各自缺料', async () => {
+    const page = await boot(makeStorage());
+    page.choose(['番茄']);
+    assert.equal(page.byId('recipe-list').children.length, 0, '修改条件本身不生成推荐');
+    page.byId('recommend-button').click();
+    assertTomatoResults(page);
+  });
+  await t.test('筛选无结果：土豆与普通组合有明确提示且不残留旧结果和详情', async () => {
+    const page = await boot(makeStorage());
+    page.choose(['番茄']); page.open(data.recipes[0]);
+    assert.equal(page.byId('recipe-detail-content').dataset.recipeId, 'recipe-001');
+
+    page.choose(['土豆']);
+    const difficulty = page.byId('recipe-filters').querySelectorAll('input[name="difficulty"]');
+    for (const input of difficulty) input.checked = input.value === '普通';
+    difficulty.find((input) => input.checked).emit('change');
+    assert.equal(page.byId('recipe-list').children.length, 0);
+    page.byId('recommend-button').click();
+
+    assert.equal(page.byId('recipe-list').children.length, 0);
+    assert.equal(page.byId('results-note').textContent, '当前条件没有符合的菜，请调整主要食材或制作难度。');
+    const currentDetail = page.byId('recipe-detail-content');
+    assert.equal(currentDetail.dataset.recipeId, undefined);
+    assert.equal(currentDetail.textContent, '请从推荐结果或收藏中选择一道菜，查看完整材料和做法。');
+    assert.equal(currentDetail.querySelector('button'), null);
+    assert.equal(currentDetail.querySelector('.missing-summary'), null);
+  });
+  await t.test('一键清空恢复：重置全部条件和详情，保留收藏，重复清空后仍可重新推荐', async () => {
+    const isolatedStorage = makeStorage('["recipe-003"]');
+    isolatedStorage.entries.set('unrelated-site-setting', 'keep');
+    const writes = [];
+    const setItem = isolatedStorage.setItem;
+    isolatedStorage.setItem = function (key, value) { writes.push([key, value]); setItem.call(this, key, value); };
+    const page = await boot(isolatedStorage);
+    const recipe = data.recipes.find((item) => item.id === 'recipe-003');
+    page.choose(['番茄']);
+    const salt = page.byId('seasonings').querySelectorAll('input').find((input) => input.value === '盐');
+    salt.checked = true; salt.emit('change');
+    const difficulty = page.byId('recipe-filters').querySelectorAll('input[name="difficulty"]');
+    for (const input of difficulty) input.checked = input.value === '普通';
+    difficulty.find((input) => input.checked).emit('change');
+    page.open(recipe);
+    assert.deepEqual(page.byId('recipe-list').children.map((card) => card.dataset.recipeId), ['recipe-003']);
+    const currentDetail = page.byId('recipe-detail-content');
+    assert.equal(currentDetail.dataset.recipeId, 'recipe-003');
+    assert.match(currentDetail.querySelector('.missing-summary').textContent, /缺少 2 种主要食材：北豆腐、鸡蛋/);
+
+    const savedEntries = [...isolatedStorage.entries];
+    const favoriteNodes = page.byId('favorites-list').descendants();
+    const favoriteStatus = page.byId('favorites-status').textContent;
+    const retryHidden = page.byId('favorites-retry').hidden;
+    for (let click = 0; click < 3; click++) {
+      page.byId('clear-filters-button').click();
+      for (const name of ['main-ingredient', 'seasoning']) {
+        assert.equal(page.byId('recipe-filters').querySelectorAll(`input[name="${name}"]:checked`).length, 0);
+      }
+      assert.deepEqual(difficulty.filter((input) => input.checked).map((input) => input.value), ['all']);
+      assert.equal(page.byId('recipe-list').children.length, 0);
+      assert.equal(page.byId('results-note').textContent, '请至少选择一种主要食材，再点击“看看能做什么”。');
+      assert.equal(currentDetail.dataset.recipeId, undefined);
+      assert.equal(currentDetail.textContent, '请从推荐结果或收藏中选择一道菜，查看完整材料和做法。');
+      assert.equal(currentDetail.querySelector('button'), null);
+      assert.deepEqual(page.byId('favorites-list').descendants(), favoriteNodes);
+      assert.equal(page.byId('favorites-status').textContent, favoriteStatus);
+      assert.equal(page.byId('favorites-retry').hidden, retryHidden);
+      assert.deepEqual([...isolatedStorage.entries], savedEntries);
+      assert.deepEqual(writes, []);
+    }
+
+    page.byId('favorites-list').querySelector('button').click();
+    assert.equal(currentDetail.dataset.recipeId, recipe.id);
+    assert.equal(currentDetail.querySelector('.missing-summary'), null, '清空后从收藏打开不得沿用旧选材的缺料结论');
+    assert.match(currentDetail.textContent, /尚无有效选材条件/);
+    assert.deepEqual(currentDetail.querySelector('ol').children.map((step) => step.textContent), recipe.steps);
+    assert.equal(currentDetail.querySelector('.detail-favorite').textContent, '取消收藏');
+    page.byId('clear-filters-button').click();
+    page.choose(['番茄']);
+    page.byId('recommend-button').click();
+    assertTomatoResults(page);
+    assert.deepEqual([...isolatedStorage.entries], savedEntries);
+    assert.deepEqual(writes, []);
+  });
   await t.test('做法默认完整展开，按钮文字与关联状态一致', async () => {
     const page = await boot(makeStorage());
     const recipe = data.recipes[0];
@@ -432,6 +525,42 @@ test('真实 app.js 的详情与收藏连接（仅内存 DOM 和存储）', asyn
   });
 });
 
+test('菜品加载中清空按钮禁用，直接派发点击也不掩盖加载状态', async (t) => {
+  const descriptors = Object.fromEntries(['document', 'fetch', 'localStorage'].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  t.after(() => {
+    for (const [key, descriptor] of Object.entries(descriptors)) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else delete globalThis[key];
+    }
+  });
+  const document = makeDocument();
+  const byId = (id) => document.getElementById(id);
+  byId('main-ingredients').textContent = '正在加载主要食材……';
+  byId('seasonings').textContent = '正在加载调料……';
+  byId('results-note').textContent = '正在加载菜品资料……';
+  byId('recipe-detail-content').textContent = '请等待菜品资料加载。';
+  globalThis.document = document;
+  let resolveResponse;
+  globalThis.fetch = () => new Promise((resolve) => { resolveResponse = resolve; });
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: makeStorage() });
+  await import('../app.js?day12-load-pending');
+
+  assert.equal(byId('clear-filters-button').disabled, true);
+  byId('clear-filters-button').emit('click');
+  assert.equal(byId('main-ingredients').textContent, '正在加载主要食材……');
+  assert.equal(byId('seasonings').textContent, '正在加载调料……');
+  assert.equal(byId('results-note').textContent, '正在加载菜品资料……');
+  assert.equal(byId('recipe-detail-content').textContent, '请等待菜品资料加载。');
+  assert.equal(byId('recommend-button').disabled, true);
+  assert.ok(byId('recipe-filters').querySelectorAll('fieldset').every((fieldset) => fieldset.disabled));
+
+  resolveResponse({ ok: true, json: async () => structuredClone(data) });
+  await new Promise(setImmediate);
+  assert.equal(byId('clear-filters-button').disabled, false);
+  assert.equal(byId('recommend-button').disabled, false);
+  assert.equal(byId('results-note').textContent, '请至少选择一种主要食材，再点击“看看能做什么”。');
+});
+
 test('菜品加载失败时食材区不再停留在加载中', async (t) => {
   const scenarios = [
     { name: '请求被拒绝', id: 'rejected', fetch: async () => { throw new Error('模拟网络失败'); } },
@@ -466,5 +595,12 @@ test('菜品加载失败时食材区不再停留在加载中', async (t) => {
     assert.match(byId('preview-notice').textContent, /菜品资料未能加载/);
     assert.ok(byId('recipe-filters').querySelectorAll('fieldset').every((fieldset) => fieldset.disabled));
     assert.equal(byId('recommend-button').disabled, true);
+    assert.equal(byId('clear-filters-button').disabled, true);
+    byId('clear-filters-button').emit('click');
+    assert.equal(byId('results-note').textContent, '资料未加载，暂时无法生成推荐。');
+    assert.equal(byId('recipe-detail-content').textContent, '菜品资料未加载，暂时无法查看详情。');
+    assert.equal(byId('favorites-status').textContent, '菜品资料未加载，暂时无法显示收藏。');
+    assert.equal(byId('clear-filters-button').disabled, true);
+    assert.equal(byId('recipe-list').children.length, 0);
   });
 });

@@ -3,6 +3,7 @@ import { readFavorites, saveFavorite } from "./favorites.mjs";
 
 const filters = document.querySelector("#recipe-filters");
 const recommendButton = document.querySelector("#recommend-button");
+const clearFiltersButton = document.querySelector("#clear-filters-button");
 const resultList = document.querySelector("#recipe-list");
 const resultNote = document.querySelector("#results-note");
 const previewNotice = document.querySelector("#preview-notice");
@@ -10,6 +11,7 @@ const detailContent = document.querySelector("#recipe-detail-content");
 const favoriteList = document.querySelector("#favorites-list");
 const favoriteStatus = document.querySelector("#favorites-status");
 const favoriteRetry = document.querySelector("#favorites-retry");
+const initialResultNote = "请至少选择一种主要食材，再点击“看看能做什么”。";
 let recipes = [];
 let recipeNotes = [];
 let safetyNotes = [];
@@ -164,6 +166,17 @@ recommendButton.addEventListener("click", () => {
   document.querySelector("#results-heading").focus();
 });
 
+clearFiltersButton.addEventListener("click", () => {
+  if (!ready) return;
+  for (const input of filters.querySelectorAll("input")) {
+    input.checked = input.name === "difficulty" && input.value === "all";
+  }
+  resultList.replaceChildren();
+  recommendationSelection = null;
+  resetRecipeDetail();
+  resultNote.textContent = initialResultNote;
+});
+
 // 条件一变就清除旧结果和详情，避免沿用过期的缺料信息。
 filters.addEventListener("change", () => {
   if (!ready) return;
@@ -265,9 +278,10 @@ async function loadRecipes() {
     renderChoices("seasonings", "seasoning", "seasonings");
     for (const fieldset of filters.querySelectorAll("fieldset")) fieldset.disabled = false;
     recommendButton.disabled = false;
+    clearFiltersButton.disabled = false;
     ready = true;
     previewNotice.hidden = true;
-    resultNote.textContent = "请至少选择一种主要食材，再点击“看看能做什么”。";
+    resultNote.textContent = initialResultNote;
     loadFavorites();
   } catch (error) {
     previewNotice.hidden = false;
