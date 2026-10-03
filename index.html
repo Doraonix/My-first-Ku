@@ -8,83 +8,95 @@
     <script type="module" src="./app.js"></script>
   </head>
   <body>
-    <a class="skip-link" href="#main">跳到主要内容</a>
+    <a id="skip-link" class="skip-link" href="#main">跳到主要内容</a>
     <header class="site-header page-width">
       <span class="brand">下一餐<span class="brand-note">给自己的选菜小工具</span></span>
-      <a class="button button-secondary" href="#favorites">我的收藏</a>
+      <nav class="view-navigation" aria-label="主要导航">
+        <a id="nav-home" class="button button-secondary" href="#home" aria-current="page">选菜首页</a>
+        <a id="nav-favorites" class="button button-secondary" href="#favorites">我的收藏</a>
+      </nav>
     </header>
 
     <main id="main" class="page-width">
-      <section class="hero" aria-labelledby="page-title">
-        <p class="eyebrow">从家里已有的食材开始</p>
-        <h1 id="page-title">下一餐，吃点什么？</h1>
-        <p class="intro">看看手边的食材，挑一道愿意动手做的家常菜。</p>
-      </section>
-
+      <div id="state-preview-notice" class="preview-notice state-preview-notice" role="status" hidden="hidden">
+        <p id="state-preview-text"></p>
+        <a id="exit-state-preview" class="button button-secondary" href="#home">退出演示</a>
+      </div>
+      <p id="route-note" class="preview-notice" role="status" hidden="hidden"></p>
       <p id="preview-notice" class="preview-notice" role="status">选菜功能加载中；若一直停留在此提示，请通过本地预览服务打开。</p>
       <noscript><p class="preview-notice">选菜功能需要浏览器启用 JavaScript。</p></noscript>
 
-      <section id="recipe-filters" class="panel" aria-labelledby="ingredients-heading">
-        <div class="section-heading">
-          <h2 id="ingredients-heading">先看看家里有什么</h2>
-          <p>推荐至少需要一种已有主要食材，最多可缺两种；调料单独提示。</p>
-        </div>
-        <div class="ingredient-grid">
-          <fieldset disabled="disabled" aria-describedby="preview-notice main-ingredients-note">
-            <legend>主要食材</legend>
-            <p id="main-ingredients-note" class="field-note">勾选表示有这种食材，用量还需对照菜谱确认。</p>
-            <div id="main-ingredients" class="choices">
-              <p class="field-note">正在加载主要食材……</p>
-            </div>
-          </fieldset>
-          <fieldset disabled="disabled" aria-describedby="preview-notice seasonings-note">
-            <legend>调料</legend>
-            <p id="seasonings-note" class="field-note">油、盐也要自行勾选，不默认已有。</p>
-            <div id="seasonings" class="choices">
-              <p class="field-note">正在加载调料……</p>
-            </div>
-          </fieldset>
-        </div>
-        <div class="filter-actions">
-          <fieldset disabled="disabled" aria-describedby="preview-notice">
-            <legend>制作难度</legend>
-            <div class="choices">
-              <label class="choice"><input type="radio" name="difficulty" value="all" checked="checked" />不限</label>
-              <label class="choice"><input type="radio" name="difficulty" value="简单" />简单</label>
-              <label class="choice"><input type="radio" name="difficulty" value="普通" />普通</label>
-            </div>
-          </fieldset>
-          <div class="filter-buttons">
-            <button id="clear-filters-button" class="button button-secondary" type="button" disabled="disabled" aria-describedby="preview-notice">清空筛选</button>
-            <button id="recommend-button" class="button button-primary" type="button" disabled="disabled" aria-describedby="preview-notice">看看能做什么</button>
+      <div id="home-view">
+        <section class="hero" aria-labelledby="page-title">
+          <p class="eyebrow">从家里已有的食材开始</p>
+          <h1 id="page-title" tabindex="-1">下一餐，吃点什么？</h1>
+          <p class="intro">看看手边的食材，挑一道愿意动手做的家常菜。</p>
+        </section>
+
+        <section id="recipe-filters" class="panel" aria-labelledby="ingredients-heading">
+          <div class="section-heading">
+            <h2 id="ingredients-heading">先看看家里有什么</h2>
+            <p>推荐至少需要一种已有主要食材，最多可缺两种；调料单独提示。</p>
           </div>
-        </div>
-      </section>
-
-      <section class="results-section" aria-labelledby="results-heading">
-        <div class="section-heading">
-          <p class="eyebrow">先从这四道家常菜开始</p>
-          <h2 id="results-heading" tabindex="-1">推荐结果</h2>
-          <p id="results-note" role="status" aria-atomic="true">菜品资料尚未加载，暂时无法生成推荐。</p>
-        </div>
-        <div id="recipe-list" class="recipe-grid" aria-describedby="results-note"></div>
-      </section>
-
-      <div class="support-grid">
-        <section id="recipe-detail" class="panel" aria-labelledby="detail-heading">
-          <h2 id="detail-heading">菜品详情</h2>
-          <div id="recipe-detail-content">
-            <p class="placeholder">请从推荐结果或收藏中选择一道菜，查看完整材料和做法。</p>
+          <div class="ingredient-grid">
+            <fieldset disabled="disabled" aria-describedby="preview-notice main-ingredients-note">
+              <legend>主要食材</legend>
+              <p id="main-ingredients-note" class="field-note">勾选表示有这种食材，用量还需对照菜谱确认。</p>
+              <div id="main-ingredients" class="choices">
+                <p class="field-note">正在加载主要食材……</p>
+              </div>
+            </fieldset>
+            <fieldset disabled="disabled" aria-describedby="preview-notice seasonings-note">
+              <legend>调料</legend>
+              <p id="seasonings-note" class="field-note">油、盐也要自行勾选，不默认已有。</p>
+              <div id="seasonings" class="choices">
+                <p class="field-note">正在加载调料……</p>
+              </div>
+            </fieldset>
+          </div>
+          <div class="filter-actions">
+            <fieldset disabled="disabled" aria-describedby="preview-notice">
+              <legend>制作难度</legend>
+              <div class="choices">
+                <label class="choice"><input type="radio" name="difficulty" value="all" checked="checked" />不限</label>
+                <label class="choice"><input type="radio" name="difficulty" value="简单" />简单</label>
+                <label class="choice"><input type="radio" name="difficulty" value="普通" />普通</label>
+              </div>
+            </fieldset>
+            <div class="filter-buttons">
+              <button id="clear-filters-button" class="button button-secondary" type="button" disabled="disabled" aria-describedby="preview-notice">清空筛选</button>
+              <button id="recommend-button" class="button button-primary" type="button" disabled="disabled" aria-describedby="preview-notice">看看能做什么</button>
+            </div>
           </div>
         </section>
-        <section id="favorites" class="panel" aria-labelledby="favorites-heading">
-          <h2 id="favorites-heading" tabindex="-1">我的收藏</h2>
-          <p id="favorites-status" class="field-note" role="status" aria-atomic="true">正在读取收藏……</p>
-          <button id="favorites-retry" class="button button-secondary" type="button" hidden="hidden">重试读取</button>
-          <div id="favorites-list" class="favorites-list"></div>
-          <p class="field-note">收藏仅保存在当前设备、当前浏览器的本站点内。清除网站数据会清除收藏，不跨设备同步。</p>
+
+        <section class="results-section" aria-labelledby="results-heading">
+          <div class="section-heading">
+            <p class="eyebrow">先从这四道家常菜开始</p>
+            <h2 id="results-heading" tabindex="-1">推荐结果</h2>
+            <p id="results-note" role="status" aria-atomic="true">正在加载菜品资料……</p>
+          </div>
+          <div id="recipe-list" class="recipe-grid" aria-describedby="results-note"></div>
         </section>
+
       </div>
+
+      <section id="recipe-detail" class="panel view-panel" aria-labelledby="detail-heading" hidden="hidden">
+        <button id="detail-back" class="button button-secondary view-back" type="button">返回选菜</button>
+        <h2 id="detail-heading" tabindex="-1">菜品详情</h2>
+        <div id="recipe-detail-content">
+          <p class="placeholder">请从推荐结果或收藏中选择一道菜，查看完整材料和做法。</p>
+        </div>
+        <p id="detail-favorites-status" class="field-note" role="status" aria-atomic="true" hidden="hidden"></p>
+        <button id="detail-favorites-retry" class="button button-secondary" type="button" hidden="hidden">重试读取</button>
+      </section>
+      <section id="favorites" class="panel view-panel" aria-labelledby="favorites-heading" hidden="hidden">
+        <h2 id="favorites-heading" tabindex="-1">我的收藏</h2>
+        <p id="favorites-status" class="field-note" role="status" aria-atomic="true">正在读取收藏……</p>
+        <button id="favorites-retry" class="button button-secondary" type="button" hidden="hidden">重试读取</button>
+        <div id="favorites-list" class="favorites-list"></div>
+        <p class="field-note">收藏仅保存在当前设备、当前浏览器的本站点内。清除网站数据会清除收藏，不跨设备同步。</p>
+      </section>
     </main>
     <footer class="page-width site-footer">先缩小选择，再决定下一餐。</footer>
   </body>

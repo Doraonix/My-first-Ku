@@ -20,6 +20,11 @@ a { color: var(--green); }
 :focus-visible { outline: 3px solid #9c642a; outline-offset: 4px; }
 .page-width { width: min(1080px, calc(100% - 48px)); margin-inline: auto; }
 .site-header { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding-block: 24px; border-bottom: 1px solid var(--border); }
+.view-navigation { display: flex; flex-wrap: wrap; gap: 12px; }
+.view-navigation [aria-current="page"] { background: #eaf0e6; border-color: var(--green); }
+.view-panel { margin-top: 32px; }
+.view-back { margin-bottom: 20px; }
+main > .preview-notice { margin-top: 24px; }
 .brand { font-size: 26px; font-weight: 700; letter-spacing: 0.06em; }
 .brand-note { display: block; margin-top: 2px; color: var(--muted); font-size: 12px; font-weight: 400; letter-spacing: 0.04em; }
 .hero { padding: 48px 0 32px; }
@@ -29,6 +34,7 @@ h2 { font-size: 22px; }
 h3 { font-size: 20px; line-height: 1.5; }
 .intro { color: var(--muted); font-size: 17px; }
 .preview-notice { margin-bottom: 20px; padding: 12px 16px; border-left: 3px solid #a87b3b; border-radius: 4px; background: #f0eadb; color: #604a29; font-size: 14px; }
+.state-preview-notice > .button { margin-top: 8px; }
 .panel, .recipe-card { border: 1px solid var(--border); border-radius: 18px; background: var(--surface); padding: 28px; }
 .section-heading { margin-bottom: 24px; }
 .section-heading > p:not(.eyebrow) { margin-top: 8px; color: var(--muted); font-size: 14px; }
@@ -53,7 +59,7 @@ a.button-secondary:hover,
 button.button-secondary:enabled:hover { background: #eaf0e6; }
 .button-primary:enabled:hover { background: #234a33; }
 .results-section { margin-top: 40px; }
-.recipe-grid, .support-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+.recipe-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
 .recipe-card { display: flex; flex-direction: column; align-items: flex-start; }
 .card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; width: 100%; }
 .difficulty-badge { flex-shrink: 0; padding: 3px 10px; border-radius: 20px; color: #3e5945; background: #eaf0e6; font-size: 12px; }
@@ -62,7 +68,6 @@ button.button-secondary:enabled:hover { background: #eaf0e6; }
 .recipe-card > .button { margin-top: auto; }
 .missing-summary { width: 100%; margin-bottom: 22px; padding: 12px; border-radius: 8px; background: #f2f4ec; font-size: 14px; }
 .missing-summary p + p { margin-top: 6px; }
-.support-grid { margin-top: 32px; align-items: start; }
 .detail-header, .detail-section { margin-top: 20px; }
 .detail-section h4 { font-size: 16px; }
 .steps-toggle { margin-top: 8px; }
@@ -75,25 +80,18 @@ button.button-secondary:enabled:hover { background: #eaf0e6; }
 .favorite-card:first-child { padding-top: 0; }
 .favorite-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .placeholder { margin-top: 14px; color: var(--muted); }
-.support-grid .field-note { margin-top: 12px; margin-bottom: 0; }
+.view-panel > .field-note { margin-top: 12px; margin-bottom: 0; }
 .site-footer { padding-block: 32px; color: var(--muted); font-size: 13px; text-align: center; }
 .skip-link { position: absolute; top: 8px; left: 16px; z-index: 1; padding: 8px 16px; border: 1px solid var(--green); border-radius: 8px; background: var(--surface); transform: translateY(-150%); }
 .skip-link:focus { transform: translateY(0); }
 
-@media (min-width: 721px) {
-  /* 仅在未选菜、收藏读取成功且为空时对齐两个面板，不拉伸实际内容。 */
-  .support-grid:has(#recipe-detail-content > .placeholder):has(#favorites-list > .placeholder):has(#favorites-retry[hidden]) {
-    align-items: stretch;
-  }
-}
-
 @media (max-width: 720px) {
   .page-width { width: calc(100% - 32px); }
-  .site-header { padding-block: 18px; gap: 12px; }
+  .site-header { padding-block: 18px; gap: 12px; flex-wrap: wrap; }
   .brand { font-size: 23px; }
   .hero { padding-block: 32px 24px; }
   .panel, .recipe-card { padding: 20px; }
-  .ingredient-grid, .recipe-grid, .support-grid { grid-template-columns: 1fr; }
+  .ingredient-grid, .recipe-grid { grid-template-columns: 1fr; }
   .ingredient-grid { gap: 24px; }
   .filter-buttons, .filter-buttons > .button { width: 100%; }
   .results-section { margin-top: 32px; }

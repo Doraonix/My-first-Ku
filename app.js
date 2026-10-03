@@ -11,6 +11,25 @@ const detailContent = document.querySelector("#recipe-detail-content");
 const favoriteList = document.querySelector("#favorites-list");
 const favoriteStatus = document.querySelector("#favorites-status");
 const favoriteRetry = document.querySelector("#favorites-retry");
+const detailFavoriteStatus = document.querySelector("#detail-favorites-status");
+const detailFavoriteRetry = document.querySelector("#detail-favorites-retry");
+const detailBack = document.querySelector("#detail-back");
+const routeNote = document.querySelector("#route-note");
+const statePreviewNotice = document.querySelector("#state-preview-notice");
+const statePreviewText = document.querySelector("#state-preview-text");
+const exitStatePreview = document.querySelector("#exit-state-preview");
+const previewMode = import.meta.env?.DEV === true
+  && ["localhost", "127.0.0.1", "[::1]"].includes(window.location.hostname)
+  ? new URLSearchParams(window.location.search).get("state-preview") : null;
+const views = {
+  home: document.querySelector("#home-view"),
+  detail: document.querySelector("#recipe-detail"),
+  favorites: document.querySelector("#favorites"),
+};
+const navigation = [
+  [document.querySelector("#nav-home"), "#home", "home"],
+  [document.querySelector("#nav-favorites"), "#favorites", "favorites"],
+];
 const initialResultNote = "请至少选择一种主要食材，再点击“看看能做什么”。";
 let recipes = [];
 let recipeNotes = [];
@@ -21,6 +40,90 @@ let favoritesReadable = false;
 let pendingFavorite = null;
 let activeDetail = null;
 let recommendationSelection = null;
+let currentView = "home";
+let renderedHash = null;
+let recipeLoadFailed = false;
+
+function updateStatePreviewExit() {
+  if (previewMode !== "loading" && previewMode !== "error") return;
+  const exitUrl = new URL(window.location.href);
+  exitUrl.searchParams.delete("state-preview");
+  exitStatePreview.href = exitUrl.href;
+}
+
+function focusCurrentView() {
+  const target = currentView === "detail"
+    ? detailContent.querySelector("h3") ?? document.querySelector("#detail-heading")
+    : currentView === "favorites" ? document.querySelector("#favorites-heading")
+      : document.querySelector(resultList.children.length ? "#results-heading" : "#page-title");
+  target.focus();
+}
+
+function renderRoute(focus = true) {
+  let hash = window.location.hash;
+  if (hash !== renderedHash) routeNote.hidden = true;
+  if (!hash) {
+    hash = "#home";
+    window.history.replaceState(null, "", hash);
+  }
+  const detailRoute = hash.match(/^#recipe(?:\/([a-zA-Z0-9_-]+))?$/);
+  if (hash !== "#home" && hash !== "#favorites" && !detailRoute) {
+    hash = "#home";
+    window.history.replaceState(null, "", hash);
+    routeNote.textContent = "这个地址没有对应的视图，已返回选菜首页。";
+    routeNote.hidden = false;
+  }
+  currentView = detailRoute ? "detail" : hash === "#favorites" ? "favorites" : "home";
+  renderedHash = hash;
+  for (const [name, view] of Object.entries(views)) view.hidden = name !== currentView;
+  for (const [link, , name] of navigation) link.setAttribute("aria-current", name === currentView ? "page" : "false");
+  const viewTitle = currentView === "home" ? "从现有食材开始选菜" : currentView === "favorites" ? "我的收藏" : "菜品详情";
+  document.title = `下一餐｜${viewTitle}`;
+  updateStatePreviewExit();
+  if (currentView === "detail") {
+    detailBack.textContent = window.history.state?.nextMealDetailFrom === "favorites" ? "返回收藏" : "返回选菜";
+    if (!ready) {
+      resetRecipeDetail(recipeLoadFailed ? "菜品资料未加载，暂时无法查看详情。" : "正在加载菜品资料，请稍候……");
+    } else if (!detailRoute[1]) {
+      resetRecipeDetail();
+    } else {
+      const recipe = recipes.find((item) => item.id === detailRoute[1]);
+      if (recipe) {
+        showRecipeDetail({ recipe,
+          ...(recommendationSelection ? getRecipeAvailability(recipe, recommendationSelection) : {}) });
+      } else {
+        resetRecipeDetail("没有找到这道菜，请返回选菜或从收藏中重新选择。");
+      }
+    }
+  }
+  if (focus) focusCurrentView();
+}
+
+function navigate(hash, from) {
+  routeNote.hidden = true;
+  if (window.location.hash !== hash) window.location.hash = hash;
+  // 来源跟随这条历史记录，前进、后退时不会借用另一次打开详情的来源。
+  if (from) window.history.replaceState({ nextMealDetailFrom: from }, "", hash);
+  renderRoute();
+}
+
+for (const [link, hash] of navigation) {
+  link.addEventListener("click", (event) => {
+    if (event.button > 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    navigate(hash);
+  });
+}
+detailBack.addEventListener("click", () => {
+  navigate(window.history.state?.nextMealDetailFrom === "favorites" ? "#favorites" : "#home");
+});
+document.querySelector("#skip-link").addEventListener("click", (event) => {
+  event.preventDefault();
+  focusCurrentView();
+});
+window.addEventListener("hashchange", () => {
+  if (window.location.hash !== renderedHash) renderRoute();
+});
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
@@ -92,6 +195,7 @@ function resetRecipeDetail(message = "请从推荐结果或收藏中选择一道
   activeDetail = null;
   detailContent.replaceChildren(element("p", "placeholder", message));
   delete detailContent.dataset.recipeId;
+  syncDetailFavoriteFeedback();
 }
 
 function showRecipeDetail(match) {
@@ -121,11 +225,10 @@ function showRecipeDetail(match) {
   );
   const favoriteButton = element("button", "button button-secondary detail-favorite");
   favoriteButton.type = "button";
-  favoriteButton.setAttribute("aria-describedby", "favorites-status");
+  favoriteButton.setAttribute("aria-describedby", "detail-favorites-status");
   favoriteButton.addEventListener("click", () => changeFavorite(recipe.id, !favoriteIds.includes(recipe.id)));
   detailContent.append(favoriteButton);
   updateDetailFavoriteButton();
-  title.focus();
 }
 
 function recipeCard(match) {
@@ -137,7 +240,7 @@ function recipeCard(match) {
   const detailsButton = element("button", "button button-secondary", "查看做法");
   detailsButton.type = "button";
   detailsButton.setAttribute("aria-label", `查看${recipe.name}的做法`);
-  detailsButton.addEventListener("click", () => showRecipeDetail(match));
+  detailsButton.addEventListener("click", () => navigate(`#recipe/${recipe.id}`, "home"));
   card.append(heading, element("p", "material-label", "主要食材"),
     element("p", "", recipe.mainIngredients.map((item) => item.name).join(" · ")),
     missingSummary(match), detailsButton);
@@ -188,7 +291,15 @@ filters.addEventListener("change", () => {
     : "请至少选择一种主要食材；只选择调料还不能推荐。";
 });
 
+function syncDetailFavoriteFeedback() {
+  detailFavoriteStatus.textContent = favoriteStatus.textContent;
+  detailFavoriteStatus.hidden = !activeDetail;
+  detailFavoriteRetry.textContent = favoriteRetry.textContent;
+  detailFavoriteRetry.hidden = !activeDetail || favoriteRetry.hidden;
+}
+
 function updateDetailFavoriteButton() {
+  syncDetailFavoriteFeedback();
   const button = detailContent.querySelector(".detail-favorite");
   if (!button || !activeDetail) return;
   button.disabled = !favoritesReadable;
@@ -212,8 +323,7 @@ function renderFavorites() {
     const view = element("button", "button button-secondary", "查看做法");
     view.type = "button";
     view.setAttribute("aria-label", `查看${recipe.name}的做法`);
-    view.addEventListener("click", () => showRecipeDetail({ recipe,
-      ...(recommendationSelection ? getRecipeAvailability(recipe, recommendationSelection) : {}) }));
+    view.addEventListener("click", () => navigate(`#recipe/${recipe.id}`, "favorites"));
     const remove = element("button", "button button-secondary", "取消收藏");
     remove.type = "button";
     remove.disabled = !favoritesReadable;
@@ -260,13 +370,17 @@ function changeFavorite(id, shouldSave) {
   updateDetailFavoriteButton();
 }
 
-favoriteRetry.addEventListener("click", () => {
+function retryFavorite() {
   if (pendingFavorite) changeFavorite(pendingFavorite.id, pendingFavorite.shouldSave);
   else loadFavorites();
-});
+}
+favoriteRetry.addEventListener("click", retryFavorite);
+detailFavoriteRetry.addEventListener("click", retryFavorite);
 
 async function loadRecipes() {
+  if (previewMode === "loading") return;
   try {
+    if (previewMode === "error") throw new Error("状态演示：模拟菜品资料读取失败");
     const response = await fetch(new URL("./data/recipes.json", import.meta.url));
     if (!response.ok) throw new Error(`菜品请求失败：${response.status}`);
     const data = await response.json();
@@ -283,7 +397,9 @@ async function loadRecipes() {
     previewNotice.hidden = true;
     resultNote.textContent = initialResultNote;
     loadFavorites();
+    renderRoute(false);
   } catch (error) {
+    recipeLoadFailed = true;
     previewNotice.hidden = false;
     previewNotice.textContent = "菜品资料未能加载，请确认通过本地预览服务打开后刷新。";
     document.getElementById("main-ingredients").replaceChildren(
@@ -295,8 +411,17 @@ async function loadRecipes() {
     resultNote.textContent = "资料未加载，暂时无法生成推荐。";
     favoriteStatus.textContent = "菜品资料未加载，暂时无法显示收藏。";
     resetRecipeDetail("菜品资料未加载，暂时无法查看详情。");
-    console.error("菜品资料加载失败：", error);
+    renderRoute(false);
+    if (previewMode !== "error") console.error("菜品资料加载失败：", error);
   }
 }
 
+if (previewMode === "loading" || previewMode === "error") {
+  statePreviewNotice.hidden = false;
+  statePreviewText.textContent = previewMode === "loading"
+    ? "状态演示：加载中。此页面会停留在加载状态，方便核对；点击退出演示可恢复正常使用。"
+    : "状态演示：加载失败。这是用于核对错误提示的模拟情况；点击退出演示可恢复正常使用。";
+}
+
+renderRoute(false);
 loadRecipes();

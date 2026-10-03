@@ -1,9 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { FAVORITES_KEY } from '../favorites.mjs';
+import { runInNewContext } from 'node:vm';
+import { recommendRecipes, getRecipeAvailability } from '../recommendations.mjs';
+import { FAVORITES_KEY, readFavorites, saveFavorite } from '../favorites.mjs';
 
 const data = JSON.parse(readFileSync(new URL('../data/recipes.json', import.meta.url), 'utf8'));
+const indexHtml = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+const appUrl = new URL('../app.js', import.meta.url);
+
+// 加载占位内容取自真实 HTML，避免模拟页面自行填对文案而漏掉页面错误。
+function initialHtmlElement(id) {
+  const match = indexHtml.match(new RegExp(`<([a-z][a-z0-9]*)\\b([^>]*\\bid="${id}"[^>]*)>([\\s\\S]*?)<\\/\\1>`, 'i'));
+  assert.ok(match, `index.html 应包含 #${id}`);
+  return { tag: match[1], attributes: match[2], text: match[3].replace(/<[^>]*>/g, '').trim() };
+}
 
 // 只模拟本应用用到的 DOM；不验证浏览器布局、可访问性或实际网络。
 class MemoryNode {
@@ -21,11 +32,26 @@ class MemoryNode {
   }
   replaceChildren(...nodes) { this.text = ''; this.children = []; this.append(...nodes); }
   addEventListener(type, listener) { (this.listeners[type] ??= []).push(listener); }
-  emit(type, target = this) {
-    for (const listener of this.listeners[type] ?? []) listener({ type, target, currentTarget: this });
-    this.parentNode?.emit(type, target);
+  emit(type, target = this, init = {}) {
+    const event = {
+      type, target, button: 0, ctrlKey: false, metaKey: false, shiftKey: false, altKey: false,
+      defaultPrevented: false, preventDefault() { this.defaultPrevented = true; }, ...init,
+    };
+    for (let node = this; node; node = node.parentNode) {
+      event.currentTarget = node;
+      for (const listener of node.listeners[type] ?? []) listener(event);
+    }
+    return event;
   }
-  click() { if (!this.disabled) this.emit('click'); }
+  click(init = {}) {
+    if (this.disabled) return;
+    const event = this.emit('click', this, init);
+    if (this.tagName === 'A' && this.href?.startsWith('#') && !event.defaultPrevented
+      && event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) {
+      globalThis.window.location.hash = this.href;
+    }
+    return event;
+  }
   focus() { globalThis.document.activeElement = this; }
   scrollIntoView() {}
   setAttribute(name, value) { this[name === 'class' ? 'className' : name] = String(value); }
@@ -49,9 +75,26 @@ function makeDocument() {
   document.createTextNode = (text) => { const node = new MemoryNode('#text'); node.textContent = text; return node; };
   document.getElementById = (id) => document.querySelector(`#${id}`);
   const add = (tag, id, parent = document) => { const node = new MemoryNode(tag); node.id = id; parent.append(node); return node; };
-  const filters = add('section', 'recipe-filters');
+  add('a', 'skip-link').href = '#main';
+  add('a', 'nav-home').href = '#home';
+  add('a', 'nav-favorites').href = '#favorites';
+  const main = add('main', 'main');
+  add('p', 'route-note', main).hidden = true;
+  add('div', 'preview-notice', main).textContent = initialHtmlElement('preview-notice').text;
+  const statePreview = add('div', 'state-preview-notice', main);
+  statePreview.hidden = /\bhidden(?:\s|=|$)/.test(initialHtmlElement('state-preview-notice').attributes);
+  const stateTextHtml = initialHtmlElement('state-preview-text');
+  add(stateTextHtml.tag, 'state-preview-text', statePreview).textContent = stateTextHtml.text;
+  const exitPreview = add('a', 'exit-state-preview', statePreview);
+  const exitHtml = initialHtmlElement('exit-state-preview');
+  exitPreview.textContent = exitHtml.text;
+  exitPreview.href = exitHtml.attributes.match(/\bhref="([^"]*)"/)?.[1] ?? '';
+  const home = add('section', 'home-view', main);
+  add('h1', 'page-title', home);
+  const filters = add('section', 'recipe-filters', home);
   for (const id of ['main-ingredients', 'seasonings']) {
-    const group = add('fieldset', '', filters); group.disabled = true; add('div', id, group);
+    const group = add('fieldset', '', filters); group.disabled = true;
+    add('div', id, group).textContent = initialHtmlElement(id).text;
   }
   const difficulty = add('fieldset', '', filters); difficulty.disabled = true;
   for (const value of ['all', '简单', '普通']) {
@@ -60,15 +103,88 @@ function makeDocument() {
   }
   add('button', 'recommend-button', filters).disabled = true;
   add('button', 'clear-filters-button', filters).disabled = true;
-  for (const id of ['recipe-list', 'results-note', 'results-heading', 'preview-notice']) add('div', id);
-  const section = add('section', 'recipe-detail');
-  add('h2', 'detail-heading', section); add('div', 'recipe-detail-content', section);
-  const favorites = add('section', 'favorites');
+  for (const id of ['recipe-list', 'results-note', 'results-heading']) add('div', id, home);
+  document.getElementById('results-note').textContent = initialHtmlElement('results-note').text;
+  const section = add('section', 'recipe-detail', main); section.hidden = true;
+  add('button', 'detail-back', section);
+  add('h2', 'detail-heading', section);
+  add('div', 'recipe-detail-content', section).textContent = initialHtmlElement('recipe-detail-content').text;
+  add('p', 'detail-favorites-status', section);
+  add('button', 'detail-favorites-retry', section).hidden = true;
+  const favorites = add('section', 'favorites', main); favorites.hidden = true;
   add('h2', 'favorites-heading', favorites);
-  add('p', 'favorites-status', favorites);
+  add('p', 'favorites-status', favorites).textContent = initialHtmlElement('favorites-status').text;
   add('button', 'favorites-retry', favorites).hidden = true;
   add('div', 'favorites-list', favorites);
   return document;
+}
+
+// hash 赋值创建历史条目，replaceState 只替换当前条目；回退/前进恢复该条目的来源。
+// hashchange 与浏览器一样延后派发，让同步导航和随后的地址事件都经过真实 app.js。
+function makeWindow(initialHash = '', initialState = null, initialUrl = 'http://localhost/') {
+  const address = new URL(initialUrl);
+  const normalize = (value) => value ? `#${String(value).replace(/^#/, '')}` : '';
+  const entries = [{ hash: normalize(initialHash), state: structuredClone(initialState) }];
+  const listeners = new Map();
+  let index = 0;
+  const dispatchHashChange = (oldHash, newHash) => {
+    if (oldHash === newHash) return;
+    queueMicrotask(() => {
+      const event = { type: 'hashchange', oldURL: `http://localhost/${oldHash}`, newURL: `http://localhost/${newHash}` };
+      for (const listener of listeners.get('hashchange') ?? []) listener(event);
+    });
+  };
+  const window = {
+    addEventListener(type, listener) {
+      if (!listeners.has(type)) listeners.set(type, []);
+      listeners.get(type).push(listener);
+    },
+    location: {
+      hostname: address.hostname,
+      origin: address.origin,
+      pathname: address.pathname,
+      search: address.search,
+      get href() { return `${address.origin}${address.pathname}${address.search}${entries[index].hash}`; },
+      get hash() { return entries[index].hash; },
+      set hash(value) {
+        const hash = normalize(value);
+        const previous = entries[index].hash;
+        if (hash === previous) return;
+        entries.splice(index + 1, entries.length, { hash, state: null });
+        index++;
+        dispatchHashChange(previous, hash);
+      },
+    },
+    history: {
+      get state() { return entries[index].state; },
+      get length() { return entries.length; },
+      replaceState(state, _title, hash = entries[index].hash) {
+        entries[index] = { hash: normalize(hash), state: structuredClone(state) };
+      },
+      go(delta) {
+        const target = index + delta;
+        if (target < 0 || target >= entries.length || target === index) return;
+        const previous = entries[index].hash;
+        index = target;
+        dispatchHashChange(previous, entries[index].hash);
+      },
+      back() { this.go(-1); },
+      forward() { this.go(1); },
+    },
+  };
+  return window;
+}
+
+function assertView(page, expected) {
+  const views = ['home-view', 'recipe-detail', 'favorites'];
+  assert.deepEqual(views.filter((id) => page.byId(id).hidden !== true), [expected]);
+}
+
+function assertVisible(node) {
+  assert.ok(node, '应存在可见节点');
+  for (let current = node; current; current = current.parentNode) {
+    assert.notEqual(current.hidden, true, `${current.id || current.tagName} 不应被隐藏`);
+  }
 }
 
 function makeStorage(raw = null) {
@@ -85,16 +201,23 @@ function makeStorage(raw = null) {
 
 test('真实 app.js 的详情与收藏连接（仅内存 DOM 和存储）', async (t) => {
   const previous = { document: globalThis.document, fetch: globalThis.fetch };
+  const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'window');
   const storageDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
   t.after(() => {
     Object.assign(globalThis, previous);
+    if (windowDescriptor) Object.defineProperty(globalThis, 'window', windowDescriptor);
+    else delete globalThis.window;
     if (storageDescriptor) Object.defineProperty(globalThis, 'localStorage', storageDescriptor);
     else delete globalThis.localStorage;
   });
   let bootCount = 0;
-  const boot = async (storage) => {
+  const boot = async (storage, { hash = '', state = null } = {}) => {
+    // 换全局页面前排空旧页面排队的地址事件，避免旧监听器读取到新 window。
+    await new Promise(setImmediate);
     const document = makeDocument();
+    const window = makeWindow(hash, state);
     globalThis.document = document;
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: window });
     Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: storage });
     globalThis.fetch = async () => ({ ok: true, json: async () => structuredClone(data) });
     await import(`../app.js?test=${++bootCount}`);
@@ -113,7 +236,7 @@ test('真实 app.js 的详情与收藏连接（仅内存 DOM 和存储）', asyn
       const button = card.querySelector('button'); assert.equal(button.disabled, false); button.click();
       return card;
     };
-    return { byId, choose, open };
+    return { byId, choose, open, document, window };
   };
   const assertTomatoResults = (page) => {
     const cards = page.byId('recipe-list').children;
@@ -523,10 +646,484 @@ test('真实 app.js 的详情与收藏连接（仅内存 DOM 和存储）', asyn
     assert.deepEqual(writes, [[FAVORITES_KEY, JSON.stringify([recipe.id])], [FAVORITES_KEY, '[]']]);
     assert.deepEqual(JSON.parse(isolatedStorage.getItem(FAVORITES_KEY)), []);
   });
+
+  await t.test('Day 13：空地址进入选菜，顶部导航每次只显示一个视图', async () => {
+    const page = await boot(makeStorage());
+    assert.equal(page.window.location.hash, '#home');
+    assert.equal(page.window.history.length, 1, '默认地址应替换当前历史条目');
+    assertView(page, 'home-view');
+    page.byId('nav-favorites').click();
+    assert.equal(page.window.location.hash, '#favorites');
+    assertView(page, 'favorites');
+    assert.match(page.byId('favorites-list').textContent, /还没有收藏的菜/);
+    await new Promise(setImmediate);
+    assertView(page, 'favorites');
+    page.byId('nav-home').click();
+    assert.equal(page.window.location.hash, '#home');
+    assertView(page, 'home-view');
+    const historyLength = page.window.history.length;
+    page.byId('nav-home').click();
+    assert.equal(page.window.history.length, historyLength, '重复进入当前地址不增加历史');
+  });
+
+  await t.test('Day 13：推荐进入详情再返回，选材、调料、难度和推荐卡片保持原样', async () => {
+    const page = await boot(makeStorage());
+    const recipe = data.recipes.find((item) => item.id === 'recipe-003');
+    page.choose(['番茄']);
+    const salt = page.byId('seasonings').querySelectorAll('input').find((input) => input.value === '盐');
+    salt.checked = true; salt.emit('change');
+    const difficulty = page.byId('recipe-filters').querySelectorAll('input[name="difficulty"]');
+    for (const input of difficulty) input.checked = input.value === '普通';
+    difficulty.find((input) => input.checked).emit('change');
+    page.byId('recommend-button').click();
+    const cards = [...page.byId('recipe-list').children];
+    const note = page.byId('results-note').textContent;
+    const selections = page.byId('recipe-filters').querySelectorAll('input').map(({ name, value, checked }) => ({ name, value, checked }));
+    const card = cards.find((node) => node.dataset.recipeId === recipe.id);
+    assert.ok(card);
+    card.querySelector('button').click();
+    assert.equal(page.window.location.hash, `#recipe/${recipe.id}`);
+    assert.equal(page.window.history.state.nextMealDetailFrom, 'home');
+    assertView(page, 'recipe-detail');
+    assert.equal(page.byId('detail-back').textContent, '返回选菜');
+    const steps = page.byId('recipe-detail-content').querySelector('#recipe-steps');
+    const toggle = page.byId('recipe-detail-content').querySelector('.steps-toggle');
+    toggle.click();
+    await new Promise(setImmediate);
+    assert.equal(page.byId('recipe-detail-content').querySelector('#recipe-steps'), steps, '同步导航后的 hashchange 不应重复创建详情');
+    assert.equal(steps.hidden, true, '稍后的同地址事件不应重置刚收起的做法');
+    page.byId('detail-back').click();
+    assert.equal(page.window.location.hash, '#home');
+    assertView(page, 'home-view');
+    assert.deepEqual(page.byId('recipe-filters').querySelectorAll('input').map(({ name, value, checked }) => ({ name, value, checked })), selections);
+    assert.deepEqual(page.byId('recipe-list').children, cards);
+    assert.equal(page.byId('results-note').textContent, note);
+    assertVisible(page.byId('recipe-list'));
+  });
+
+  await t.test('Day 13：从收藏进入详情，取消最后一道后仍可返回收藏空列表', async () => {
+    const storage = makeStorage('["recipe-001"]');
+    const page = await boot(storage);
+    page.byId('nav-favorites').click();
+    page.byId('favorites-list').querySelector('button').click();
+    assertView(page, 'recipe-detail');
+    assert.equal(page.window.history.state.nextMealDetailFrom, 'favorites');
+    assert.equal(page.byId('detail-back').textContent, '返回收藏');
+    page.byId('recipe-detail-content').querySelector('.detail-favorite').click();
+    assert.equal(page.byId('recipe-detail-content').dataset.recipeId, 'recipe-001');
+    assertView(page, 'recipe-detail');
+    assert.deepEqual(JSON.parse(storage.getItem(FAVORITES_KEY)), []);
+    page.byId('detail-back').click();
+    assert.equal(page.window.location.hash, '#favorites');
+    assertView(page, 'favorites');
+    assert.equal(page.byId('favorites-list').querySelectorAll('article').length, 0);
+    assert.match(page.byId('favorites-list').textContent, /还没有收藏的菜/);
+  });
+
+  await t.test('Day 13：浏览器后退与前进恢复地址、视图及各次详情的返回来源', async () => {
+    const page = await boot(makeStorage('["recipe-001"]'));
+    page.choose(['番茄']); page.open(data.recipes[0]);
+    await new Promise(setImmediate);
+    page.byId('nav-favorites').click();
+    await new Promise(setImmediate);
+    page.byId('favorites-list').querySelector('button').click();
+    await new Promise(setImmediate);
+    const journey = [
+      ['back', '#favorites', 'favorites'],
+      ['back', '#recipe/recipe-001', 'recipe-detail', 'home', '返回选菜'],
+      ['back', '#home', 'home-view'],
+      ['forward', '#recipe/recipe-001', 'recipe-detail', 'home', '返回选菜'],
+      ['forward', '#favorites', 'favorites'],
+      ['forward', '#recipe/recipe-001', 'recipe-detail', 'favorites', '返回收藏'],
+    ];
+    for (const [direction, hash, view, source, label] of journey) {
+      page.window.history[direction]();
+      await new Promise(setImmediate);
+      assert.equal(page.window.location.hash, hash, `${direction} 应恢复地址 ${hash}`);
+      assertView(page, view);
+      if (source) {
+        assert.equal(page.window.history.state.nextMealDetailFrom, source);
+        assert.equal(page.byId('detail-back').textContent, label);
+        assert.equal(page.byId('recipe-detail-content').dataset.recipeId, 'recipe-001');
+      }
+    }
+    page.byId('detail-back').click();
+    assertView(page, 'favorites');
+    assert.equal(page.window.location.hash, '#favorites');
+  });
+
+  await t.test('Day 13：直接打开有效详情地址，不虚构选材或缺料结论并可返回选菜', async () => {
+    const page = await boot(makeStorage(), { hash: '#recipe/recipe-001' });
+    const currentDetail = page.byId('recipe-detail-content');
+    assertView(page, 'recipe-detail');
+    assert.equal(currentDetail.dataset.recipeId, 'recipe-001');
+    assert.deepEqual(currentDetail.querySelector('ol').children.map((step) => step.textContent), data.recipes[0].steps);
+    assert.equal(currentDetail.querySelector('.missing-summary'), null);
+    assert.match(currentDetail.textContent, /尚无有效选材条件/);
+    assert.equal(page.byId('recipe-filters').querySelectorAll('input[name="main-ingredient"]:checked').length, 0);
+    assert.equal(page.byId('recipe-list').children.length, 0);
+    assert.equal(page.byId('detail-back').textContent, '返回选菜');
+    page.byId('detail-back').click();
+    assertView(page, 'home-view');
+    assert.equal(page.window.location.hash, '#home');
+  });
+
+  await t.test('Day 13：模拟刷新详情保留收藏来源，选材条件不被恢复为虚构状态', async () => {
+    const storage = makeStorage('["recipe-001"]');
+    const page = await boot(storage);
+    page.choose(['番茄']); page.byId('recommend-button').click();
+    page.byId('nav-favorites').click();
+    page.byId('favorites-list').querySelector('button').click();
+    const refreshed = await boot(storage, {
+      hash: page.window.location.hash,
+      state: structuredClone(page.window.history.state),
+    });
+    assertView(refreshed, 'recipe-detail');
+    assert.equal(refreshed.window.location.hash, '#recipe/recipe-001');
+    assert.equal(refreshed.byId('detail-back').textContent, '返回收藏');
+    assert.equal(refreshed.byId('recipe-detail-content').querySelector('.missing-summary'), null);
+    assert.match(refreshed.byId('recipe-detail-content').textContent, /尚无有效选材条件/);
+    assert.equal(refreshed.byId('recipe-detail-content').querySelector('.detail-favorite').textContent, '取消收藏');
+    refreshed.byId('detail-back').click();
+    assertView(refreshed, 'favorites');
+    assert.equal(refreshed.byId('favorites-list').querySelectorAll('article').length, 1);
+  });
+
+  await t.test('Day 13：不存在的菜品地址有提示和安全返回入口', async () => {
+    const page = await boot(makeStorage(), { hash: '#recipe/recipe-does-not-exist' });
+    const currentDetail = page.byId('recipe-detail-content');
+    assertView(page, 'recipe-detail');
+    assert.equal(currentDetail.dataset.recipeId, undefined);
+    assert.equal(currentDetail.querySelector('ol'), null);
+    assert.equal(currentDetail.querySelector('.detail-favorite'), null);
+    assert.match(currentDetail.textContent, /不存在|找不到|未找到|没有找到|无效/);
+    assertVisible(page.byId('detail-back'));
+    page.byId('detail-back').click();
+    assertView(page, 'home-view');
+    assert.equal(page.window.location.hash, '#home');
+  });
+
+  await t.test('Day 13：未知地址替换为选菜并提示，地址事件同样可以安全恢复', async () => {
+    const page = await boot(makeStorage(), { hash: '#unknown-view' });
+    assertView(page, 'home-view');
+    assert.equal(page.window.location.hash, '#home');
+    assert.equal(page.window.history.length, 1, '纠正错误地址不应新增一条历史');
+    assertVisible(page.byId('route-note'));
+    assert.ok(page.byId('route-note').textContent.trim());
+    page.byId('nav-favorites').click();
+    await new Promise(setImmediate);
+    page.window.location.hash = '#still-unknown';
+    await new Promise(setImmediate);
+    assertView(page, 'home-view');
+    assert.equal(page.window.location.hash, '#home');
+    assertVisible(page.byId('route-note'));
+    assert.ok(page.byId('route-note').textContent.trim());
+  });
+
+  await t.test('Day 13：没有菜品编号的详情地址显示空详情并可返回', async () => {
+    const page = await boot(makeStorage(), { hash: '#recipe' });
+    const currentDetail = page.byId('recipe-detail-content');
+    assertView(page, 'recipe-detail');
+    assert.equal(currentDetail.dataset.recipeId, undefined);
+    assert.ok(currentDetail.textContent.trim());
+    assert.equal(currentDetail.querySelector('.detail-favorite'), null);
+    assertVisible(page.byId('detail-back'));
+    page.byId('detail-back').click();
+    assertView(page, 'home-view');
+  });
+
+  await t.test('Day 13：详情内收藏和取消的成功提示位于当前可见视图', async () => {
+    const storage = makeStorage();
+    const page = await boot(storage);
+    page.choose(['番茄']); page.open(data.recipes[0]);
+    const currentDetail = page.byId('recipe-detail-content');
+    const status = page.byId('detail-favorites-status');
+    assert.equal(status.parentNode, page.byId('recipe-detail'));
+    assert.ok(!currentDetail.descendants().includes(status));
+    currentDetail.querySelector('.detail-favorite').click();
+    assertView(page, 'recipe-detail');
+    assertVisible(status);
+    assert.match(status.textContent, /已收藏.*番茄炒蛋/);
+    assert.equal(status.textContent, page.byId('favorites-status').textContent);
+    assert.equal(page.byId('detail-favorites-retry').hidden, true);
+    assert.deepEqual(JSON.parse(storage.getItem(FAVORITES_KEY)), ['recipe-001']);
+    currentDetail.querySelector('.detail-favorite').click();
+    assertVisible(status);
+    assert.match(status.textContent, /已取消收藏.*番茄炒蛋/);
+    assert.equal(status.textContent, page.byId('favorites-status').textContent);
+    assert.equal(currentDetail.querySelector('.detail-favorite').textContent, '收藏');
+  });
+
+  await t.test('Day 13：详情内保存失败与重试入口可见，重试成功前保留原收藏状态', async () => {
+    const storage = makeStorage(); storage.failWrite = true;
+    const page = await boot(storage);
+    page.choose(['番茄']); page.open(data.recipes[0]);
+    const currentDetail = page.byId('recipe-detail-content');
+    const status = page.byId('detail-favorites-status');
+    const retry = page.byId('detail-favorites-retry');
+    assert.equal(retry.parentNode, page.byId('recipe-detail'));
+    for (const shouldSave of [true, false]) {
+      const before = shouldSave ? '收藏' : '取消收藏';
+      const after = shouldSave ? '取消收藏' : '收藏';
+      storage.failWrite = true;
+      currentDetail.querySelector('.detail-favorite').click();
+      assertView(page, 'recipe-detail');
+      assert.equal(currentDetail.querySelector('.detail-favorite').textContent, before);
+      assert.deepEqual(JSON.parse(storage.getItem(FAVORITES_KEY) ?? '[]'), shouldSave ? [] : ['recipe-001']);
+      assertVisible(status); assertVisible(retry);
+      assert.match(status.textContent, /保存失败/);
+      assert.equal(status.textContent, page.byId('favorites-status').textContent);
+      assert.equal(retry.textContent, '重试保存');
+      storage.failWrite = false; retry.click();
+      assertView(page, 'recipe-detail');
+      assert.equal(currentDetail.querySelector('.detail-favorite').textContent, after);
+      assert.equal(retry.hidden, true);
+      assertVisible(status);
+      assert.ok(!status.textContent.includes('保存失败'));
+      assert.deepEqual(JSON.parse(storage.getItem(FAVORITES_KEY)), shouldSave ? ['recipe-001'] : []);
+    }
+  });
+
+  await t.test('Day 13：跳到主要内容阻止锚点默认动作，不改变当前路由', async () => {
+    const page = await boot(makeStorage('["recipe-001"]'));
+    const checkSkip = async (view) => {
+      const hash = page.window.location.hash;
+      const historyLength = page.window.history.length;
+      const event = page.byId('skip-link').click();
+      assert.equal(event.defaultPrevented, true);
+      await new Promise(setImmediate);
+      assert.equal(page.window.location.hash, hash);
+      assert.equal(page.window.history.length, historyLength);
+      assertView(page, view);
+      assertVisible(page.document.activeElement);
+    };
+    await checkSkip('home-view');
+    page.byId('nav-favorites').click();
+    await checkSkip('favorites');
+    page.byId('favorites-list').querySelector('button').click();
+    await checkSkip('recipe-detail');
+  });
+});
+
+test('Day 13：本地开发状态演示（真实应用脚本与 HTML，内存 DOM 和存储）', async (t) => {
+  const descriptors = Object.fromEntries(['document', 'window'].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  t.after(() => {
+    for (const [key, descriptor] of Object.entries(descriptors)) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else delete globalThis[key];
+    }
+  });
+
+  const boot = async (storage, { dev = true, url = 'http://localhost/?state-preview=loading' } = {}) => {
+    await new Promise(setImmediate);
+    const address = new URL(url);
+    const document = makeDocument();
+    const window = makeWindow(address.hash, null, address.href);
+    globalThis.document = document;
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: window });
+    const calls = { requests: [], reads: [], writes: [] };
+    const observedStorage = {
+      getItem(key) { calls.reads.push(key); return storage.getItem(key); },
+      setItem(key, value) { calls.writes.push([key, value]); storage.setItem(key, value); },
+    };
+    // Node 原生 import 没有 Vite 的 DEV 标记。仅替换模块环境值与静态 import，
+    // 其余应用源码原样执行；收藏使用原模块函数和它已有的存储回调参数。
+    const script = readFileSync(appUrl, 'utf8')
+      .replace(/^import \{ recommendRecipes, getRecipeAvailability \} from "\.\/recommendations\.mjs";\r?\n/m, '')
+      .replace(/^import \{ readFavorites, saveFavorite \} from "\.\/favorites\.mjs";\r?\n/m, '')
+      .replaceAll('import.meta.env?.DEV', String(dev))
+      .replaceAll('import.meta.url', JSON.stringify(appUrl.href));
+    assert.ok(!/^import /m.test(script), '模拟执行只应移除两条已知模块 import');
+    await runInNewContext(script, {
+      document, window, URL, URLSearchParams, recommendRecipes, getRecipeAvailability,
+      readFavorites: (validIds) => readFavorites(validIds, () => observedStorage),
+      saveFavorite: (validIds, id, shouldSave) => saveFavorite(validIds, id, shouldSave, () => observedStorage),
+      fetch: async (request) => {
+        calls.requests.push(request.href);
+        return { ok: true, json: async () => structuredClone(data) };
+      },
+      console: { error() {} },
+    }, { filename: appUrl.pathname });
+    await new Promise(setImmediate);
+    return { document, window, calls, byId: (id) => document.getElementById(id) };
+  };
+  const assertDisabled = (page) => {
+    assert.equal(page.byId('recommend-button').disabled, true);
+    assert.equal(page.byId('clear-filters-button').disabled, true);
+    assert.ok(page.byId('recipe-filters').querySelectorAll('fieldset').every((fieldset) => fieldset.disabled));
+    assert.equal(page.byId('recipe-list').children.length, 0);
+  };
+  const assertNormalLoad = (page) => {
+    assert.equal(page.calls.requests.length, 1);
+    assert.equal(page.calls.requests[0], new URL('../data/recipes.json', import.meta.url).href);
+    assert.deepEqual(page.calls.reads, [FAVORITES_KEY]);
+    assert.deepEqual(page.calls.writes, []);
+    assert.equal(page.byId('state-preview-notice').hidden, true);
+    assert.equal(page.byId('preview-notice').hidden, true);
+    assert.equal(page.byId('recommend-button').disabled, false);
+    assert.equal(page.byId('clear-filters-button').disabled, false);
+    assert.equal(page.byId('results-note').textContent, '请至少选择一种主要食材，再点击“看看能做什么”。');
+    assert.ok(page.byId('main-ingredients').querySelectorAll('input').length > 0);
+  };
+
+  await t.test('加载演示在三种本机地址停留于真实初始 UI，阻止操作且不读取或改动收藏', async () => {
+    assert.equal(initialHtmlElement('results-note').text, '正在加载菜品资料……');
+    assert.match(initialHtmlElement('state-preview-notice').attributes, /\bhidden(?:\s|=|$)/);
+    for (const host of ['localhost', '127.0.0.1', '[::1]']) {
+      const storage = makeStorage('["recipe-001"]');
+      storage.entries.set('unrelated-site-setting', 'keep');
+      const saved = [...storage.entries];
+      const page = await boot(storage, { url: `http://${host}:5173/?state-preview=loading#home` });
+      assertView(page, 'home-view');
+      assertDisabled(page);
+      assertVisible(page.byId('state-preview-notice'));
+      assert.match(page.byId('state-preview-text').textContent, /状态演示.*加载中/);
+      for (const id of ['main-ingredients', 'seasonings', 'results-note', 'preview-notice']) {
+        assert.equal(page.byId(id).textContent, initialHtmlElement(id).text, `${host} 的 ${id} 应保持 HTML 初始提示`);
+      }
+      for (const id of ['recommend-button', 'clear-filters-button']) page.byId(id).emit('click');
+      page.byId('recipe-filters').emit('change');
+      assert.equal(page.byId('results-note').textContent, '正在加载菜品资料……');
+      page.byId('nav-favorites').click();
+      assertView(page, 'favorites');
+      assert.equal(page.byId('favorites-status').textContent, initialHtmlElement('favorites-status').text);
+      assert.ok(!page.byId('favorites-list').textContent.includes('还没有收藏'));
+      page.window.location.hash = '#recipe/recipe-001';
+      await new Promise(setImmediate);
+      assertView(page, 'recipe-detail');
+      assert.match(page.byId('recipe-detail-content').textContent, /正在加载菜品资料/);
+      assert.equal(page.byId('recipe-detail-content').querySelector('.detail-favorite'), null);
+      assertDisabled(page);
+      assert.deepEqual(page.calls, { requests: [], reads: [], writes: [] });
+      assert.deepEqual([...storage.entries], saved);
+    }
+  });
+
+  await t.test('错误演示走真实加载失败提示，退出地址重新打开后恢复菜品和原收藏', async () => {
+    const storage = makeStorage('["recipe-001"]');
+    const saved = [...storage.entries];
+    const page = await boot(storage, { url: 'http://localhost:5173/?state-preview=error#recipe/recipe-001' });
+    assertView(page, 'recipe-detail');
+    assertVisible(page.byId('state-preview-notice'));
+    assert.match(page.byId('state-preview-text').textContent, /状态演示.*加载失败/);
+    assert.equal(page.byId('preview-notice').hidden, false);
+    assert.match(page.byId('preview-notice').textContent, /菜品资料未能加载/);
+    assert.equal(page.byId('main-ingredients').textContent, '主要食材未能加载，请刷新页面重试。');
+    assert.equal(page.byId('seasonings').textContent, '调料未能加载，请刷新页面重试。');
+    assert.equal(page.byId('results-note').textContent, '资料未加载，暂时无法生成推荐。');
+    assert.equal(page.byId('favorites-status').textContent, '菜品资料未加载，暂时无法显示收藏。');
+    assert.equal(page.byId('recipe-detail-content').textContent, '菜品资料未加载，暂时无法查看详情。');
+    assertDisabled(page);
+    for (const id of ['recommend-button', 'clear-filters-button']) page.byId(id).emit('click');
+    assert.equal(page.byId('results-note').textContent, '资料未加载，暂时无法生成推荐。');
+    assert.deepEqual(page.calls, { requests: [], reads: [], writes: [] });
+    assert.deepEqual([...storage.entries], saved);
+    const exit = page.byId('exit-state-preview');
+    assertVisible(exit);
+    assert.equal(initialHtmlElement('exit-state-preview').tag, 'a', '退出入口应通过普通链接重新加载');
+    const recovered = await boot(storage, { url: exit.href });
+    assertNormalLoad(recovered);
+    assertView(recovered, 'recipe-detail');
+    assert.equal(recovered.byId('recipe-detail-content').dataset.recipeId, 'recipe-001');
+    assert.equal(recovered.byId('recipe-detail-content').querySelector('.detail-favorite').textContent, '取消收藏');
+    assert.deepEqual([...storage.entries], saved);
+  });
+
+  await t.test('两种演示的退出地址只移除演示参数，保留其他参数和导航后的当前 hash', async () => {
+    for (const mode of ['loading', 'error']) {
+      const page = await boot(makeStorage(), {
+        url: `http://localhost:5173/demo/?state-preview=${mode}&theme=light&tag=a&tag=b#favorites`,
+      });
+      const assertExit = (hash) => {
+        const exit = new URL(page.byId('exit-state-preview').href);
+        assert.equal(exit.origin, 'http://localhost:5173');
+        assert.equal(exit.pathname, '/demo/');
+        assert.deepEqual([...exit.searchParams], [['theme', 'light'], ['tag', 'a'], ['tag', 'b']]);
+        assert.equal(exit.hash, hash);
+      };
+      assertExit('#favorites');
+      page.byId('nav-home').click();
+      assertExit('#home');
+      await new Promise(setImmediate);
+      page.window.location.hash = '#recipe/recipe-001';
+      await new Promise(setImmediate);
+      assertExit('#recipe/recipe-001');
+    }
+  });
+
+  await t.test('非开发环境或非本机地址忽略两种演示参数，仍读取正式 JSON 和原收藏', async () => {
+    for (const [dev, host] of [[false, 'localhost'], [true, 'example.test']]) {
+      for (const mode of ['loading', 'error']) {
+        const storage = makeStorage('["recipe-001"]');
+        const saved = [...storage.entries];
+        const page = await boot(storage, { dev, url: `http://${host}/?state-preview=${mode}#favorites` });
+        assertNormalLoad(page);
+        assertView(page, 'favorites');
+        assert.equal(page.byId('favorites-list').querySelectorAll('article').length, 1);
+        assert.deepEqual([...storage.entries], saved);
+      }
+    }
+  });
+
+  await t.test('空值、未知值和大小写不同的演示参数均正常加载', async () => {
+    for (const mode of ['', 'unknown', 'Loading']) {
+      const page = await boot(makeStorage(), { url: `http://localhost/?state-preview=${mode}#home` });
+      assertNormalLoad(page);
+      assertView(page, 'home-view');
+      assert.equal(page.byId('favorites-list').querySelectorAll('article').length, 0);
+      assert.match(page.byId('favorites-list').textContent, /还没有收藏的菜/);
+    }
+  });
+});
+
+test('Day 13：直接进入详情等待 JSON 完成后显示菜品，不提前虚构详情或选材', async (t) => {
+  const descriptors = Object.fromEntries(['document', 'fetch', 'localStorage', 'window'].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  t.after(() => {
+    for (const [key, descriptor] of Object.entries(descriptors)) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else delete globalThis[key];
+    }
+  });
+  const document = makeDocument();
+  const window = makeWindow('#recipe/recipe-001', { nextMealDetailFrom: 'favorites' });
+  const byId = (id) => document.getElementById(id);
+  globalThis.document = document;
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: window });
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: makeStorage('["recipe-001"]') });
+  let resolveJson;
+  globalThis.fetch = async () => ({ ok: true, json: () => new Promise((resolve) => { resolveJson = resolve; }) });
+  await import('../app.js?day13-direct-detail-pending-json');
+
+  assert.equal(typeof resolveJson, 'function');
+  assert.equal(window.location.hash, '#recipe/recipe-001');
+  assertView({ byId }, 'recipe-detail');
+  assert.equal(byId('recipe-detail-content').dataset.recipeId, undefined);
+  assert.equal(byId('recipe-detail-content').querySelector('ol'), null);
+  assert.equal(byId('recipe-detail-content').querySelector('.detail-favorite'), null);
+  assert.equal(byId('recommend-button').disabled, true);
+  assert.equal(byId('detail-back').textContent, '返回收藏');
+
+  resolveJson(structuredClone(data));
+  await new Promise(setImmediate);
+  assertView({ byId }, 'recipe-detail');
+  const currentDetail = byId('recipe-detail-content');
+  assert.equal(window.location.hash, '#recipe/recipe-001');
+  assert.equal(currentDetail.dataset.recipeId, 'recipe-001');
+  assert.deepEqual(currentDetail.querySelector('ol').children.map((step) => step.textContent), data.recipes[0].steps);
+  assert.equal(currentDetail.querySelector('.missing-summary'), null);
+  assert.match(currentDetail.textContent, /尚无有效选材条件/);
+  assert.equal(currentDetail.querySelector('.detail-favorite').textContent, '取消收藏');
+  assert.equal(byId('recipe-filters').querySelectorAll('input[name="main-ingredient"]:checked').length, 0);
+  assert.equal(byId('recipe-list').children.length, 0);
+  assert.equal(byId('detail-back').textContent, '返回收藏');
+  byId('detail-back').click();
+  await new Promise(setImmediate);
+  assertView({ byId }, 'favorites');
+  assert.equal(window.location.hash, '#favorites');
 });
 
 test('菜品加载中清空按钮禁用，直接派发点击也不掩盖加载状态', async (t) => {
-  const descriptors = Object.fromEntries(['document', 'fetch', 'localStorage'].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  const descriptors = Object.fromEntries(['document', 'fetch', 'localStorage', 'window'].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
   t.after(() => {
     for (const [key, descriptor] of Object.entries(descriptors)) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor);
@@ -535,11 +1132,9 @@ test('菜品加载中清空按钮禁用，直接派发点击也不掩盖加载�
   });
   const document = makeDocument();
   const byId = (id) => document.getElementById(id);
-  byId('main-ingredients').textContent = '正在加载主要食材……';
-  byId('seasonings').textContent = '正在加载调料……';
-  byId('results-note').textContent = '正在加载菜品资料……';
-  byId('recipe-detail-content').textContent = '请等待菜品资料加载。';
+  const initialDetail = byId('recipe-detail-content').textContent;
   globalThis.document = document;
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: makeWindow() });
   let resolveResponse;
   globalThis.fetch = () => new Promise((resolve) => { resolveResponse = resolve; });
   Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: makeStorage() });
@@ -550,7 +1145,7 @@ test('菜品加载中清空按钮禁用，直接派发点击也不掩盖加载�
   assert.equal(byId('main-ingredients').textContent, '正在加载主要食材……');
   assert.equal(byId('seasonings').textContent, '正在加载调料……');
   assert.equal(byId('results-note').textContent, '正在加载菜品资料……');
-  assert.equal(byId('recipe-detail-content').textContent, '请等待菜品资料加载。');
+  assert.equal(byId('recipe-detail-content').textContent, initialDetail);
   assert.equal(byId('recommend-button').disabled, true);
   assert.ok(byId('recipe-filters').querySelectorAll('fieldset').every((fieldset) => fieldset.disabled));
 
@@ -567,7 +1162,7 @@ test('菜品加载失败时食材区不再停留在加载中', async (t) => {
     { name: 'HTTP 返回失败', id: 'http', fetch: async () => ({ ok: false, status: 503 }) },
   ];
   for (const scenario of scenarios) await t.test(scenario.name, async (t) => {
-    const descriptors = Object.fromEntries(['document', 'fetch', 'localStorage'].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+    const descriptors = Object.fromEntries(['document', 'fetch', 'localStorage', 'window'].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
     const previousConsoleError = console.error;
     t.after(() => {
       for (const [key, descriptor] of Object.entries(descriptors)) {
@@ -578,9 +1173,8 @@ test('菜品加载失败时食材区不再停留在加载中', async (t) => {
     });
     const document = makeDocument();
     const byId = (id) => document.getElementById(id);
-    byId('main-ingredients').textContent = '正在加载主要食材……';
-    byId('seasonings').textContent = '正在加载调料……';
     globalThis.document = document;
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: makeWindow() });
     globalThis.fetch = scenario.fetch;
     Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: makeStorage() });
     console.error = () => {};
