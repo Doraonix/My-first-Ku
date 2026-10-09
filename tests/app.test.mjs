@@ -4,10 +4,76 @@ import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { recommendRecipes, getRecipeAvailability } from '../recommendations.mjs';
 import { FAVORITES_KEY, readFavorites, saveFavorite } from '../favorites.mjs';
+import { API_BASE_URL, loadRecipeData } from '../recipe-data.mjs';
 
+// 原四道已审核资料只作回归测试 fixture，应用加载仍经过真实的两读接口适配器。
 const data = JSON.parse(readFileSync(new URL('../data/recipes.json', import.meta.url), 'utf8'));
 const indexHtml = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const appUrl = new URL('../app.js', import.meta.url);
+
+function makeApiData(source) {
+  const recipes = source.recipes.map((recipe) => ({
+    id: recipe.id, name: recipe.name, difficulty: recipe.difficulty, steps: recipe.steps,
+    difficulty_reason: recipe.difficultyReason ?? null,
+    notes: recipe.notes ?? source.notes, safety_notes: recipe.safetyNotes ?? source.safetyNotes,
+  }));
+  const materials = source.recipes.flatMap((recipe) => [
+    ...recipe.mainIngredients.map((material, index) => ({
+      recipe_id: recipe.id, ...material, material_type: 'main', position: index + 1,
+    })),
+    ...recipe.seasonings.map((material, index) => ({
+      recipe_id: recipe.id, ...material, material_type: 'seasoning', position: index + 1,
+    })),
+  ]);
+  return { recipes, materials };
+}
+
+const apiData = makeApiData(data);
+const apiPaths = ['/api/recipes', '/api/recipe-materials'];
+const apiUrls = apiPaths.map((path) => `${API_BASE_URL}${path}`);
+const requestUrl = (request) => new URL(String(request));
+const responseRows = (request, fixture = apiData) => {
+  const path = requestUrl(request).pathname;
+  assert.ok(apiPaths.includes(path), `只应请求两条读接口，实际请求：${path}`);
+  return path === '/api/recipes' ? fixture.recipes : fixture.materials;
+};
+const successfulResponse = (request, fixture = apiData) => ({
+  ok: true, json: async () => ({ ok: true, data: structuredClone(responseRows(request, fixture)) }),
+});
+const successfulFetch = async (request) => successfulResponse(request);
+
+// 从已审核且已入库的 SQL 提取五道原文；测试不新增或修改菜品资料。
+function readSeedFixture() {
+  const sql = readFileSync(new URL('../seed.sql', import.meta.url), 'utf8');
+  const notes = sql.match(/SELECT '(\[[^']*\])'::jsonb AS notes,/);
+  const safetyNotes = sql.match(/'(\[[^']*\])'::jsonb AS safety_notes/);
+  assert.ok(notes && safetyNotes, 'seed.sql 应有原文说明和安全提醒');
+  const recipes = [...sql.matchAll(/\('(recipe-\d+)', '([^']+)', '(简单|普通)', '(\[[^']*\])'::jsonb, (NULL::text|'([^']*)')\)/g)]
+    .map(([, id, name, difficulty, steps, , reason]) => ({
+      id, name, difficulty, steps: JSON.parse(steps), difficulty_reason: reason ?? null,
+      notes: JSON.parse(notes[1]), safety_notes: JSON.parse(safetyNotes[1]),
+    }));
+  const materials = [...sql.matchAll(/^\s*\('(recipe-\d+)', '([^']+)', '(main|seasoning)', '([^']+)', (\d+)\)[,;]?\s*$/gm)]
+    .map(([, recipe_id, name, material_type, amount, position]) => ({
+      recipe_id, name, material_type, amount, position: Number(position),
+    }));
+  assert.equal(recipes.length, 5, '本板块使用已审核的五道 seed 菜品');
+  assert.equal(materials.length, 25, '五道 seed 菜品应包含全部原材料与调料');
+  return { recipes, materials };
+}
+
+const seedApiData = readSeedFixture();
+
+function applicationScript(dev = false) {
+  const script = readFileSync(appUrl, 'utf8')
+    .replace(/^import \{ recommendRecipes, getRecipeAvailability \} from "\.\/recommendations\.mjs";\r?\n/m, '')
+    .replace(/^import \{ readFavorites, saveFavorite \} from "\.\/favorites\.mjs";\r?\n/m, '')
+    .replace(/^import \{ loadRecipeData \} from "\.\/recipe-data\.mjs";\r?\n/m, '')
+    .replaceAll('import.meta.env?.DEV', String(dev))
+    .replaceAll('import.meta.url', JSON.stringify(appUrl.href));
+  assert.ok(!/^import /m.test(script), '模拟执行只应移除三条已知模块 import');
+  return script;
+}
 
 // 加载占位内容取自真实 HTML，避免模拟页面自行填对文案而漏掉页面错误。
 function initialHtmlElement(id) {
@@ -81,6 +147,7 @@ function makeDocument() {
   const main = add('main', 'main');
   add('p', 'route-note', main).hidden = true;
   add('div', 'preview-notice', main).textContent = initialHtmlElement('preview-notice').text;
+  add('p', 'data-source-note', main).textContent = initialHtmlElement('data-source-note').text;
   const statePreview = add('div', 'state-preview-notice', main);
   statePreview.hidden = /\bhidden(?:\s|=|$)/.test(initialHtmlElement('state-preview-notice').attributes);
   const stateTextHtml = initialHtmlElement('state-preview-text');
@@ -199,6 +266,47 @@ function makeStorage(raw = null) {
   };
 }
 
+// 实际执行 app.js 与加载适配器；只把外部 HTTP 换成可观测的两 API 模拟。
+async function bootApiPage(storage, {
+  dev = false, url = 'http://localhost/', fixture = apiData, respond,
+} = {}) {
+  await new Promise(setImmediate);
+  const address = new URL(url);
+  const document = makeDocument();
+  const window = makeWindow(address.hash, null, address.href);
+  globalThis.document = document;
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: window });
+  const calls = { requests: [], reads: [], writes: [] };
+  const observedStorage = {
+    getItem(key) { calls.reads.push(key); return storage.getItem(key); },
+    setItem(key, value) { calls.writes.push([key, value]); storage.setItem(key, value); },
+  };
+  const mockFetch = async (request, options) => {
+    const requestHref = requestUrl(request).href;
+    assert.ok(apiUrls.includes(requestHref), `应用只可读取已知云端接口：${requestHref}`);
+    assert.equal(options.method, 'GET');
+    assert.equal(options.cache, 'no-store');
+    assert.equal(options.credentials, 'omit');
+    assert.equal(options.body, undefined);
+    calls.requests.push(requestHref);
+    return respond ? respond(request, options) : successfulResponse(request, fixture);
+  };
+  await runInNewContext(applicationScript(dev), {
+    document, window, URL, URLSearchParams, recommendRecipes, getRecipeAvailability,
+    readFavorites: (validIds) => readFavorites(validIds, () => observedStorage),
+    saveFavorite: (validIds, id, shouldSave) => saveFavorite(validIds, id, shouldSave, () => observedStorage),
+    loadRecipeData: () => loadRecipeData(mockFetch), fetch: mockFetch,
+    console: { error() {} },
+  }, { filename: appUrl.pathname });
+  await new Promise(setImmediate);
+  const byId = (id) => document.getElementById(id);
+  const choose = (names) => {
+    for (const input of byId('recipe-filters').querySelectorAll('input[name="main-ingredient"]')) input.checked = names.includes(input.value);
+    byId('recipe-filters').emit('change');
+  };
+  return { document, window, calls, choose, byId };
+}
+
 test('真实 app.js 的详情与收藏连接（仅内存 DOM 和存储）', async (t) => {
   const previous = { document: globalThis.document, fetch: globalThis.fetch };
   const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'window');
@@ -219,7 +327,7 @@ test('真实 app.js 的详情与收藏连接（仅内存 DOM 和存储）', asyn
     globalThis.document = document;
     Object.defineProperty(globalThis, 'window', { configurable: true, value: window });
     Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: storage });
-    globalThis.fetch = async () => ({ ok: true, json: async () => structuredClone(data) });
+    globalThis.fetch = successfulFetch;
     await import(`../app.js?test=${++bootCount}`);
     await new Promise(setImmediate);
     const byId = (id) => document.getElementById(id);
@@ -914,39 +1022,9 @@ test('Day 13：本地开发状态演示（真实应用脚本与 HTML，内存 DO
     }
   });
 
-  const boot = async (storage, { dev = true, url = 'http://localhost/?state-preview=loading' } = {}) => {
-    await new Promise(setImmediate);
-    const address = new URL(url);
-    const document = makeDocument();
-    const window = makeWindow(address.hash, null, address.href);
-    globalThis.document = document;
-    Object.defineProperty(globalThis, 'window', { configurable: true, value: window });
-    const calls = { requests: [], reads: [], writes: [] };
-    const observedStorage = {
-      getItem(key) { calls.reads.push(key); return storage.getItem(key); },
-      setItem(key, value) { calls.writes.push([key, value]); storage.setItem(key, value); },
-    };
-    // Node 原生 import 没有 Vite 的 DEV 标记。仅替换模块环境值与静态 import，
-    // 其余应用源码原样执行；收藏使用原模块函数和它已有的存储回调参数。
-    const script = readFileSync(appUrl, 'utf8')
-      .replace(/^import \{ recommendRecipes, getRecipeAvailability \} from "\.\/recommendations\.mjs";\r?\n/m, '')
-      .replace(/^import \{ readFavorites, saveFavorite \} from "\.\/favorites\.mjs";\r?\n/m, '')
-      .replaceAll('import.meta.env?.DEV', String(dev))
-      .replaceAll('import.meta.url', JSON.stringify(appUrl.href));
-    assert.ok(!/^import /m.test(script), '模拟执行只应移除两条已知模块 import');
-    await runInNewContext(script, {
-      document, window, URL, URLSearchParams, recommendRecipes, getRecipeAvailability,
-      readFavorites: (validIds) => readFavorites(validIds, () => observedStorage),
-      saveFavorite: (validIds, id, shouldSave) => saveFavorite(validIds, id, shouldSave, () => observedStorage),
-      fetch: async (request) => {
-        calls.requests.push(request.href);
-        return { ok: true, json: async () => structuredClone(data) };
-      },
-      console: { error() {} },
-    }, { filename: appUrl.pathname });
-    await new Promise(setImmediate);
-    return { document, window, calls, byId: (id) => document.getElementById(id) };
-  };
+  const boot = (storage, options = {}) => bootApiPage(storage, {
+    dev: true, url: 'http://localhost/?state-preview=loading', ...options,
+  });
   const assertDisabled = (page) => {
     assert.equal(page.byId('recommend-button').disabled, true);
     assert.equal(page.byId('clear-filters-button').disabled, true);
@@ -954,8 +1032,7 @@ test('Day 13：本地开发状态演示（真实应用脚本与 HTML，内存 DO
     assert.equal(page.byId('recipe-list').children.length, 0);
   };
   const assertNormalLoad = (page) => {
-    assert.equal(page.calls.requests.length, 1);
-    assert.equal(page.calls.requests[0], new URL('../data/recipes.json', import.meta.url).href);
+    assert.deepEqual([...page.calls.requests].sort(), [...apiUrls].sort());
     assert.deepEqual(page.calls.reads, [FAVORITES_KEY]);
     assert.deepEqual(page.calls.writes, []);
     assert.equal(page.byId('state-preview-notice').hidden, true);
@@ -963,6 +1040,7 @@ test('Day 13：本地开发状态演示（真实应用脚本与 HTML，内存 DO
     assert.equal(page.byId('recommend-button').disabled, false);
     assert.equal(page.byId('clear-filters-button').disabled, false);
     assert.equal(page.byId('results-note').textContent, '请至少选择一种主要食材，再点击“看看能做什么”。');
+    assert.equal(page.byId('data-source-note').textContent, '数据来源：云端读接口；本次加载 4 道菜。');
     assert.ok(page.byId('main-ingredients').querySelectorAll('input').length > 0);
   };
 
@@ -978,7 +1056,7 @@ test('Day 13：本地开发状态演示（真实应用脚本与 HTML，内存 DO
       assertDisabled(page);
       assertVisible(page.byId('state-preview-notice'));
       assert.match(page.byId('state-preview-text').textContent, /状态演示.*加载中/);
-      for (const id of ['main-ingredients', 'seasonings', 'results-note', 'preview-notice']) {
+      for (const id of ['main-ingredients', 'seasonings', 'results-note', 'preview-notice', 'data-source-note']) {
         assert.equal(page.byId(id).textContent, initialHtmlElement(id).text, `${host} 的 ${id} 应保持 HTML 初始提示`);
       }
       for (const id of ['recommend-button', 'clear-filters-button']) page.byId(id).emit('click');
@@ -1051,7 +1129,7 @@ test('Day 13：本地开发状态演示（真实应用脚本与 HTML，内存 DO
     }
   });
 
-  await t.test('非开发环境或非本机地址忽略两种演示参数，仍读取正式 JSON 和原收藏', async () => {
+  await t.test('非开发环境或非本机地址忽略两种演示参数，仍读取两读接口和原收藏', async () => {
     for (const [dev, host] of [[false, 'localhost'], [true, 'example.test']]) {
       for (const mode of ['loading', 'error']) {
         const storage = makeStorage('["recipe-001"]');
@@ -1076,7 +1154,7 @@ test('Day 13：本地开发状态演示（真实应用脚本与 HTML，内存 DO
   });
 });
 
-test('Day 13：直接进入详情等待 JSON 完成后显示菜品，不提前虚构详情或选材', async (t) => {
+test('Day 13：直接进入详情等待两接口 JSON 完成后显示菜品，不提前虚构详情或选材', async (t) => {
   const descriptors = Object.fromEntries(['document', 'fetch', 'localStorage', 'window'].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
   t.after(() => {
     for (const [key, descriptor] of Object.entries(descriptors)) {
@@ -1090,11 +1168,14 @@ test('Day 13：直接进入详情等待 JSON 完成后显示菜品，不提前�
   globalThis.document = document;
   Object.defineProperty(globalThis, 'window', { configurable: true, value: window });
   Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: makeStorage('["recipe-001"]') });
-  let resolveJson;
-  globalThis.fetch = async () => ({ ok: true, json: () => new Promise((resolve) => { resolveJson = resolve; }) });
+  const resolveJson = new Map();
+  globalThis.fetch = async (request) => ({
+    ok: true,
+    json: () => new Promise((resolve) => { resolveJson.set(requestUrl(request).pathname, resolve); }),
+  });
   await import('../app.js?day13-direct-detail-pending-json');
 
-  assert.equal(typeof resolveJson, 'function');
+  assert.deepEqual([...resolveJson.keys()].sort(), [...apiPaths].sort());
   assert.equal(window.location.hash, '#recipe/recipe-001');
   assertView({ byId }, 'recipe-detail');
   assert.equal(byId('recipe-detail-content').dataset.recipeId, undefined);
@@ -1103,7 +1184,12 @@ test('Day 13：直接进入详情等待 JSON 完成后显示菜品，不提前�
   assert.equal(byId('recommend-button').disabled, true);
   assert.equal(byId('detail-back').textContent, '返回收藏');
 
-  resolveJson(structuredClone(data));
+  resolveJson.get('/api/recipes')({ ok: true, data: structuredClone(apiData.recipes) });
+  await new Promise(setImmediate);
+  assert.equal(byId('recipe-detail-content').dataset.recipeId, undefined);
+  assert.equal(byId('recipe-detail-content').querySelector('ol'), null);
+  assert.equal(byId('recommend-button').disabled, true, '仅菜品 API 完成时仍等待材料 API');
+  resolveJson.get('/api/recipe-materials')({ ok: true, data: structuredClone(apiData.materials) });
   await new Promise(setImmediate);
   assertView({ byId }, 'recipe-detail');
   const currentDetail = byId('recipe-detail-content');
@@ -1135,11 +1221,12 @@ test('菜品加载中清空按钮禁用，直接派发点击也不掩盖加载�
   const initialDetail = byId('recipe-detail-content').textContent;
   globalThis.document = document;
   Object.defineProperty(globalThis, 'window', { configurable: true, value: makeWindow() });
-  let resolveResponse;
-  globalThis.fetch = () => new Promise((resolve) => { resolveResponse = resolve; });
+  const resolveResponse = new Map();
+  globalThis.fetch = (request) => new Promise((resolve) => { resolveResponse.set(requestUrl(request).pathname, resolve); });
   Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: makeStorage() });
   await import('../app.js?day12-load-pending');
 
+  assert.deepEqual([...resolveResponse.keys()].sort(), [...apiPaths].sort());
   assert.equal(byId('clear-filters-button').disabled, true);
   byId('clear-filters-button').emit('click');
   assert.equal(byId('main-ingredients').textContent, '正在加载主要食材……');
@@ -1149,7 +1236,12 @@ test('菜品加载中清空按钮禁用，直接派发点击也不掩盖加载�
   assert.equal(byId('recommend-button').disabled, true);
   assert.ok(byId('recipe-filters').querySelectorAll('fieldset').every((fieldset) => fieldset.disabled));
 
-  resolveResponse({ ok: true, json: async () => structuredClone(data) });
+  resolveResponse.get('/api/recipes')(successfulResponse(apiUrls[0]));
+  await new Promise(setImmediate);
+  assert.equal(byId('clear-filters-button').disabled, true);
+  assert.equal(byId('recommend-button').disabled, true);
+  assert.equal(byId('results-note').textContent, '正在加载菜品资料……');
+  resolveResponse.get('/api/recipe-materials')(successfulResponse(apiUrls[1]));
   await new Promise(setImmediate);
   assert.equal(byId('clear-filters-button').disabled, false);
   assert.equal(byId('recommend-button').disabled, false);
@@ -1196,5 +1288,166 @@ test('菜品加载失败时食材区不再停留在加载中', async (t) => {
     assert.equal(byId('favorites-status').textContent, '菜品资料未加载，暂时无法显示收藏。');
     assert.equal(byId('clear-filters-button').disabled, true);
     assert.equal(byId('recipe-list').children.length, 0);
+  });
+});
+
+test('Day 17：页面从两云端读接口获取资料，保留原推荐与本地收藏行为', async (t) => {
+  const descriptors = Object.fromEntries(['document', 'window'].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  t.after(() => {
+    for (const [key, descriptor] of Object.entries(descriptors)) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else delete globalThis[key];
+    }
+  });
+  const assertTwoReads = (page) => assert.deepEqual([...page.calls.requests].sort(), [...apiUrls].sort());
+  const assertBlocked = (page) => {
+    assert.equal(page.byId('recommend-button').disabled, true);
+    assert.equal(page.byId('clear-filters-button').disabled, true);
+    assert.ok(page.byId('recipe-filters').querySelectorAll('fieldset').every((fieldset) => fieldset.disabled));
+    assert.equal(page.byId('recipe-list').children.length, 0);
+    assert.equal(page.byId('favorites-list').querySelectorAll('article').length, 0);
+    assert.equal(page.byId('recipe-detail-content').querySelector('ol'), null);
+    assert.equal(page.byId('recipe-detail-content').querySelector('.detail-favorite'), null);
+    assert.deepEqual(page.calls.reads, []);
+    assert.deepEqual(page.calls.writes, []);
+  };
+
+  await t.test('已审核的五道 seed 菜品均可推荐和查看原文；第五道收藏仍只存浏览器', async () => {
+    const storage = makeStorage('["recipe-003"]');
+    storage.entries.set('unrelated-site-setting', 'keep');
+    const page = await bootApiPage(storage, { fixture: seedApiData });
+    assertTwoReads(page);
+    assert.equal(page.byId('data-source-note').textContent, '数据来源：云端读接口；本次加载 5 道菜。');
+    assert.deepEqual(page.calls.reads, [FAVORITES_KEY]);
+    assert.deepEqual(page.calls.writes, []);
+    assert.equal(page.byId('recommend-button').disabled, false);
+    assert.equal(page.byId('clear-filters-button').disabled, false);
+
+    page.choose([...new Set(seedApiData.materials.filter((material) => material.material_type === 'main').map((material) => material.name))]);
+    page.byId('recommend-button').click();
+    const cards = page.byId('recipe-list').children;
+    assert.deepEqual(cards.map((card) => card.dataset.recipeId), ['recipe-001', 'recipe-002', 'recipe-005', 'recipe-003', 'recipe-004']);
+    assert.match(page.byId('results-note').textContent, /^找到 5 道菜：/);
+    for (const recipe of seedApiData.recipes) {
+      const card = cards.find((node) => node.dataset.recipeId === recipe.id);
+      assert.equal(card.querySelector('h3').textContent, recipe.name);
+      card.querySelector('button').click();
+      const detail = page.byId('recipe-detail-content');
+      assert.equal(detail.dataset.recipeId, recipe.id);
+      assert.deepEqual(detail.querySelector('ol').children.map((step) => step.textContent), recipe.steps);
+      for (const note of [...recipe.notes, ...recipe.safety_notes]) assert.ok(detail.textContent.includes(note));
+      for (const material of seedApiData.materials.filter((item) => item.recipe_id === recipe.id)) {
+        assert.ok(detail.textContent.includes(`${material.name}：${material.amount}`));
+      }
+      if (recipe.difficulty_reason) assert.ok(detail.textContent.includes(recipe.difficulty_reason));
+      assert.match(detail.querySelector('.missing-summary').textContent, /主要食材齐全/);
+    }
+
+    const fifth = cards.find((card) => card.dataset.recipeId === 'recipe-005');
+    fifth.querySelector('button').click();
+    const detail = page.byId('recipe-detail-content');
+    assert.match(detail.textContent, /青椒炒鸡蛋/);
+    assert.match(detail.querySelector('.missing-summary').textContent, /缺少调料：食用油、盐/);
+    detail.querySelector('.detail-favorite').click();
+    assert.equal(detail.querySelector('.detail-favorite').textContent, '取消收藏');
+    assert.deepEqual(JSON.parse(storage.getItem(FAVORITES_KEY)), ['recipe-003', 'recipe-005']);
+    assert.equal(page.byId('favorites-list').querySelectorAll('article').length, 2);
+    detail.querySelector('.detail-favorite').click();
+    assert.deepEqual(JSON.parse(storage.getItem(FAVORITES_KEY)), ['recipe-003']);
+    assert.deepEqual(page.calls.writes, [[FAVORITES_KEY, '["recipe-003","recipe-005"]'], [FAVORITES_KEY, '["recipe-003"]']]);
+    assert.equal(storage.getItem('unrelated-site-setting'), 'keep');
+    assertTwoReads(page);
+  });
+
+  const invalidRecipeFixture = structuredClone(seedApiData);
+  invalidRecipeFixture.recipes[0].steps = [];
+  const incompleteMaterialsFixture = {
+    recipes: seedApiData.recipes,
+    materials: seedApiData.materials.filter((material) => material.recipe_id !== 'recipe-005'),
+  };
+  const scenarios = apiPaths.flatMap((path) => [
+    { name: `${path} 单独 HTTP 失败`, path, failure: async () => ({ ok: false, status: 503 }) },
+    { name: `${path} 单独返回 ok:false`, path, failure: async () => ({ ok: true, json: async () => ({ ok: false, data: [] }) }) },
+  ]);
+  scenarios.push(
+    { name: '菜品接口网络异常', path: '/api/recipes', failure: async () => { throw new Error('模拟单接口网络失败'); } },
+    { name: '材料接口 JSON 解析异常', path: '/api/recipe-materials', failure: async () => ({ ok: true, json: async () => { throw new SyntaxError('模拟 JSON 解析失败'); } }) },
+    { name: '菜品资料格式异常', path: '/api/recipes', failure: async (request) => successfulResponse(request, invalidRecipeFixture) },
+    { name: '材料接口缺少第五道主要食材', path: '/api/recipe-materials', failure: async (request) => successfulResponse(request, incompleteMaterialsFixture) },
+  );
+  for (const scenario of scenarios) await t.test(`${scenario.name}：整页保护，不回退本地资料或改动收藏`, async () => {
+    const storage = makeStorage('["recipe-005"]');
+    storage.entries.set('unrelated-site-setting', 'keep');
+    const saved = [...storage.entries];
+    const page = await bootApiPage(storage, {
+      fixture: seedApiData, url: 'http://localhost/#recipe/recipe-005',
+      respond: (request) => requestUrl(request).pathname === scenario.path
+        ? scenario.failure(request) : successfulResponse(request, seedApiData),
+    });
+    assertTwoReads(page);
+    assertBlocked(page);
+    assertView(page, 'recipe-detail');
+    assert.equal(page.byId('data-source-note').textContent, '数据来源：云端读接口；本次加载失败，未使用示例数据。');
+    assert.equal(page.byId('preview-notice').hidden, false);
+    assert.equal(page.byId('preview-notice').textContent, '菜品资料未能加载，请确认读接口已部署并允许此页面访问，再刷新重试。');
+    assert.equal(page.byId('main-ingredients').textContent, '主要食材未能加载，请刷新页面重试。');
+    assert.equal(page.byId('seasonings').textContent, '调料未能加载，请刷新页面重试。');
+    assert.equal(page.byId('results-note').textContent, '资料未加载，暂时无法生成推荐。');
+    assert.equal(page.byId('favorites-status').textContent, '菜品资料未加载，暂时无法显示收藏。');
+    assert.equal(page.byId('recipe-detail-content').textContent, '菜品资料未加载，暂时无法查看详情。');
+    for (const id of ['recommend-button', 'clear-filters-button']) page.byId(id).emit('click');
+    page.byId('recipe-filters').emit('change');
+    page.byId('nav-favorites').click();
+    assertView(page, 'favorites');
+    assertBlocked(page);
+    assert.equal(page.byId('results-note').textContent, '资料未加载，暂时无法生成推荐。');
+    assert.deepEqual([...storage.entries], saved);
+    assertTwoReads(page);
+  });
+
+  await t.test('空库是已加载的零道菜，保持空库提示和禁用状态，不读写原收藏', async () => {
+    for (const hash of ['#home', '#recipe/recipe-005']) {
+      const storage = makeStorage('["recipe-005"]');
+      storage.entries.set('unrelated-site-setting', 'keep');
+      const saved = [...storage.entries];
+      const page = await bootApiPage(storage, {
+        fixture: { recipes: [], materials: [] }, url: `http://localhost/${hash}`,
+      });
+      assertTwoReads(page);
+      assertBlocked(page);
+      assert.equal(page.byId('data-source-note').textContent, '数据来源：云端读接口；本次加载 0 道菜。');
+      assert.equal(page.byId('preview-notice').hidden, false);
+      assert.equal(page.byId('preview-notice').textContent, '数据库暂无菜品资料，请稍后刷新。');
+      assert.equal(page.byId('results-note').textContent, '数据库暂无菜品，暂时无法生成推荐。');
+      assert.equal(page.byId('recipe-detail-content').textContent, '数据库暂无菜品资料，暂时无法查看详情。');
+      assert.equal(page.byId('favorites-status').textContent, '暂无菜品资料可供显示收藏；已保存的收藏不会删除。');
+      for (const id of ['recommend-button', 'clear-filters-button']) page.byId(id).emit('click');
+      page.byId('recipe-filters').emit('change');
+      page.byId('nav-favorites').click();
+      assertView(page, 'favorites');
+      assertBlocked(page);
+      assert.equal(page.byId('results-note').textContent, '数据库暂无菜品，暂时无法生成推荐。');
+      assert.deepEqual([...storage.entries], saved);
+      assertTwoReads(page);
+    }
+  });
+
+  await t.test('重新打开会再次读取两接口，显示来源的增减，不沿用上一页资料缓存', async () => {
+    const storage = makeStorage('["recipe-005"]');
+    const saved = [...storage.entries];
+    for (const [fixture, count] of [[seedApiData, 5], [apiData, 4], [seedApiData, 5]]) {
+      const page = await bootApiPage(storage, { fixture });
+      assertTwoReads(page);
+      assert.equal(page.byId('data-source-note').textContent, `数据来源：云端读接口；本次加载 ${count} 道菜。`);
+      page.choose(['鸡蛋']);
+      page.byId('recommend-button').click();
+      const recipeIds = page.byId('recipe-list').children.map((card) => card.dataset.recipeId);
+      assert.equal(recipeIds.includes('recipe-005'), count === 5);
+      assert.equal(page.byId('favorites-list').querySelectorAll('article').length, count === 5 ? 1 : 0);
+      assert.deepEqual(page.calls.reads, [FAVORITES_KEY]);
+      assert.deepEqual(page.calls.writes, []);
+      assert.deepEqual([...storage.entries], saved);
+      assertTwoReads(page);
+    }
   });
 });

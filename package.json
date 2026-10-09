@@ -7,7 +7,7 @@
     "dev": "vite --host localhost --port 5173 --strictPort",
     "build": "vite build --base=./",
     "preview": "vite preview --host localhost --port 4173 --strictPort",
-    "test": "node --test tests/app.test.mjs tests/favorites.test.mjs tests/recommendations.test.mjs"
+    "test": "node --test tests/app.test.mjs tests/favorites.test.mjs tests/recommendations.test.mjs tests/read-api.test.mjs tests/recipe-data.test.mjs"
   },
   "devDependencies": {
     "vite": "8.3.0"

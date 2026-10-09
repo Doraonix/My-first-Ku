@@ -1,5 +1,6 @@
 import { recommendRecipes, getRecipeAvailability } from "./recommendations.mjs";
 import { readFavorites, saveFavorite } from "./favorites.mjs";
+import { loadRecipeData } from "./recipe-data.mjs";
 
 const filters = document.querySelector("#recipe-filters");
 const recommendButton = document.querySelector("#recommend-button");
@@ -7,6 +8,7 @@ const clearFiltersButton = document.querySelector("#clear-filters-button");
 const resultList = document.querySelector("#recipe-list");
 const resultNote = document.querySelector("#results-note");
 const previewNotice = document.querySelector("#preview-notice");
+const dataSourceNote = document.querySelector("#data-source-note");
 const detailContent = document.querySelector("#recipe-detail-content");
 const favoriteList = document.querySelector("#favorites-list");
 const favoriteStatus = document.querySelector("#favorites-status");
@@ -32,8 +34,6 @@ const navigation = [
 ];
 const initialResultNote = "请至少选择一种主要食材，再点击“看看能做什么”。";
 let recipes = [];
-let recipeNotes = [];
-let safetyNotes = [];
 let ready = false;
 let favoriteIds = [];
 let favoritesReadable = false;
@@ -43,6 +43,7 @@ let recommendationSelection = null;
 let currentView = "home";
 let renderedHash = null;
 let recipeLoadFailed = false;
+let recipeUnavailableMessage = "菜品资料未加载，暂时无法查看详情。";
 
 function updateStatePreviewExit() {
   if (previewMode !== "loading" && previewMode !== "error") return;
@@ -83,7 +84,7 @@ function renderRoute(focus = true) {
   if (currentView === "detail") {
     detailBack.textContent = window.history.state?.nextMealDetailFrom === "favorites" ? "返回收藏" : "返回选菜";
     if (!ready) {
-      resetRecipeDetail(recipeLoadFailed ? "菜品资料未加载，暂时无法查看详情。" : "正在加载菜品资料，请稍候……");
+      resetRecipeDetail(recipeLoadFailed ? recipeUnavailableMessage : "正在加载菜品资料，请稍候……");
     } else if (!detailRoute[1]) {
       resetRecipeDetail();
     } else {
@@ -220,8 +221,8 @@ function showRecipeDetail(match) {
     detailList("主要食材与用量", recipe.mainIngredients.map((item) => `${item.name}：${item.amount}`)),
     detailList("调料与用量", recipe.seasonings.map((item) => `${item.name}：${item.amount}`)),
     recipeSteps(recipe),
-    detailList("用量与烹调说明", recipeNotes),
-    detailList("安全提醒", safetyNotes),
+    detailList("用量与烹调说明", recipe.notes),
+    detailList("安全提醒", recipe.safetyNotes),
   );
   const favoriteButton = element("button", "button button-secondary detail-favorite");
   favoriteButton.type = "button";
@@ -381,13 +382,22 @@ async function loadRecipes() {
   if (previewMode === "loading") return;
   try {
     if (previewMode === "error") throw new Error("状态演示：模拟菜品资料读取失败");
-    const response = await fetch(new URL("./data/recipes.json", import.meta.url));
-    if (!response.ok) throw new Error(`菜品请求失败：${response.status}`);
-    const data = await response.json();
-    if (!Array.isArray(data.recipes) || !data.recipes.length) throw new Error("菜品资料为空或格式不正确");
+    const data = await loadRecipeData();
     recipes = data.recipes;
-    recipeNotes = data.notes ?? [];
-    safetyNotes = data.safetyNotes ?? [];
+    dataSourceNote.textContent = `数据来源：云端读接口；本次加载 ${recipes.length} 道菜。`;
+    if (!recipes.length) {
+      recipeLoadFailed = true;
+      recipeUnavailableMessage = "数据库暂无菜品资料，暂时无法查看详情。";
+      previewNotice.hidden = false;
+      previewNotice.textContent = "数据库暂无菜品资料，请稍后刷新。";
+      document.getElementById("main-ingredients").replaceChildren(element("p", "field-note", "数据库暂无主要食材资料。"));
+      document.getElementById("seasonings").replaceChildren(element("p", "field-note", "数据库暂无调料资料。"));
+      resultNote.textContent = "数据库暂无菜品，暂时无法生成推荐。";
+      favoriteStatus.textContent = "暂无菜品资料可供显示收藏；已保存的收藏不会删除。";
+      resetRecipeDetail(recipeUnavailableMessage);
+      renderRoute(false);
+      return;
+    }
     renderChoices("main-ingredients", "main-ingredient", "mainIngredients");
     renderChoices("seasonings", "seasoning", "seasonings");
     for (const fieldset of filters.querySelectorAll("fieldset")) fieldset.disabled = false;
@@ -401,7 +411,8 @@ async function loadRecipes() {
   } catch (error) {
     recipeLoadFailed = true;
     previewNotice.hidden = false;
-    previewNotice.textContent = "菜品资料未能加载，请确认通过本地预览服务打开后刷新。";
+    previewNotice.textContent = "菜品资料未能加载，请确认读接口已部署并允许此页面访问，再刷新重试。";
+    dataSourceNote.textContent = "数据来源：云端读接口；本次加载失败，未使用示例数据。";
     document.getElementById("main-ingredients").replaceChildren(
       element("p", "field-note", "主要食材未能加载，请刷新页面重试。"),
     );

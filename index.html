@@ -23,7 +23,7 @@
         <a id="exit-state-preview" class="button button-secondary" href="#home">退出演示</a>
       </div>
       <p id="route-note" class="preview-notice" role="status" hidden="hidden"></p>
-      <p id="preview-notice" class="preview-notice" role="status">选菜功能加载中；若一直停留在此提示，请通过本地预览服务打开。</p>
+      <p id="preview-notice" class="preview-notice" role="status">正在读取云端菜品资料；若一直停留在此提示，请稍后刷新。</p>
       <noscript><p class="preview-notice">选菜功能需要浏览器启用 JavaScript。</p></noscript>
 
       <div id="home-view">
@@ -31,6 +31,7 @@
           <p class="eyebrow">从家里已有的食材开始</p>
           <h1 id="page-title" tabindex="-1">下一餐，吃点什么？</h1>
           <p class="intro">看看手边的食材，挑一道愿意动手做的家常菜。</p>
+          <p id="data-source-note" class="field-note" role="status" aria-atomic="true">数据来源：云端读接口，正在加载……</p>
         </section>
 
         <section id="recipe-filters" class="panel" aria-labelledby="ingredients-heading">
@@ -72,7 +73,7 @@
 
         <section class="results-section" aria-labelledby="results-heading">
           <div class="section-heading">
-            <p class="eyebrow">先从这四道家常菜开始</p>
+            <p class="eyebrow">从已审核的家常菜开始</p>
             <h2 id="results-heading" tabindex="-1">推荐结果</h2>
             <p id="results-note" role="status" aria-atomic="true">正在加载菜品资料……</p>
           </div>

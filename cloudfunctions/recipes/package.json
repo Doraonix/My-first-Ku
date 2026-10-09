@@ -1,0 +1,9 @@
+{
+  "name": "next-meal-recipes",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "main": "index.js",
+  "engines": { "node": ">=20.19.0" },
+  "dependencies": { "tencentcloud-sdk-nodejs-common": "4.1.220" }
+}
