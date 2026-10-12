@@ -99,21 +99,65 @@ function readMainFixture(spec, { env = runtimeFields("VM_ENV_PRIVATE"), request 
       return request ? request(params, index) : pgResult([spec.rows[index % spec.rows.length]], spec.columns);
     }
   }
-  vm.runInNewContext(readFileSync(new URL("../cloudfunctions/" + spec.name + "/index.js", import.meta.url), "utf8"), {
-    exports: exported,
+  const sandbox = vm.createContext({
     process: { env },
     Date: { now() { return now++; } },
     console: { info(...args) { assert.equal(args.length, 1); logs.push(args[0]); } },
-    require(name) {
+  });
+  const localModules = new Map();
+  function loadLocalModule(filename) {
+    assert.ok(["index.js", "database.js"].includes(filename), "只能加载当前函数包中的两个本地模块");
+    if (localModules.has(filename)) return localModules.get(filename);
+    const output = filename === "index.js" ? exported : {};
+    localModules.set(filename, output);
+    const source = readFileSync(new URL("../cloudfunctions/" + spec.name + "/" + filename, import.meta.url), "utf8");
+    const runModule = vm.runInContext("(function (exports, require) {\n" + source + "\n})", sandbox, {
+      filename: "cloudfunctions/" + spec.name + "/" + filename,
+    });
+    runModule(output, (name) => {
+      if (name === "./database.js") return loadLocalModule("database.js");
       assert.equal(name, "tencentcloud-sdk-nodejs-common");
       moduleLoads++;
       return { CommonClient: FakeCommonClient };
-    },
-  });
+    });
+    return output;
+  }
+  loadLocalModule("index.js");
   return { exported, env, logs, clients, requests, get moduleLoads() { return moduleLoads; } };
 }
 
 for (const spec of specs) {
+  test(spec.name + "：Day19 数据库操作独立在当前函数包，入口无 SQL/SDK 实现", () => {
+    const indexSource = readFileSync(new URL("../cloudfunctions/" + spec.name + "/index.js", import.meta.url), "utf8");
+    const databaseSource = readFileSync(new URL("../cloudfunctions/" + spec.name + "/database.js", import.meta.url), "utf8");
+    const database = require("../cloudfunctions/" + spec.name + "/database.js");
+    const operation = spec.name === "recipes" ? "readRecipes" : "readMaterials";
+    assert.match(indexSource, /require\("\.\/database\.js"\)/);
+    assert.doesNotMatch(indexSource, /ExecutePGSql|new CommonClient|function runtimeCredentials|FROM public\.|function decodeRows/);
+    assert.match(databaseSource, /ExecutePGSql/);
+    assert.ok(databaseSource.includes("FROM " + spec.table + " "));
+    assert.equal(typeof database.queryDatabase, "function");
+    assert.equal(typeof database[operation], "function");
+    assert.doesNotMatch(databaseSource, /statusCode|Content-Type|JSON\.stringify\(payload\)|exports\.main|require\("\.\.\//);
+  });
+
+  test(spec.name + "：Day19 数据访问层使用原查询和解码，原样转交 context/trace", async () => {
+    const database = require("../cloudfunctions/" + spec.name + "/database.js");
+    const operation = spec.name === "recipes" ? "readRecipes" : "readMaterials";
+    const context = { environment: runtimeFields("VM_DAL_PRIVATE") };
+    const trace = () => {};
+    let calls = 0;
+    const data = await database[operation](async (options, receivedTrace, receivedContext) => {
+      calls++;
+      assertReadQuery(options, spec);
+      assert.equal(receivedTrace, trace);
+      assert.equal(receivedContext, context);
+      return pgResult(spec.rows, spec.columns);
+    }, trace, context);
+    assert.equal(calls, 1);
+    assert.deepEqual(data, spec.rows);
+  });
+
   test(spec.name + "：按实际 Columns/Rows 形状返回已审核资料，不改字段值", async () => {
     let calls = 0;
     const handler = spec.module.createHandler(async (options) => {

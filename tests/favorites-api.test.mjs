@@ -181,8 +181,7 @@ function mainFixture({ env = runtimeFields("VM_ENV_PRIVATE"), fetch: fetchImpl, 
     assert.equal(typeof args[0], "string");
     logs.push(args[0]);
   };
-  vm.runInNewContext(readFileSync(new URL("../cloudfunctions/favorites/index.js", import.meta.url), "utf8"), {
-    exports: exported,
+  const sandbox = vm.createContext({
     process: { env },
     Buffer,
     Date: FakeDate,
@@ -192,14 +191,62 @@ function mainFixture({ env = runtimeFields("VM_ENV_PRIVATE"), fetch: fetchImpl, 
       authCalls.push({ url, options });
       return fetchImpl ? fetchImpl(url, options, authCalls.length - 1) : authResponse();
     },
-    require(name) {
+  });
+  const localModules = new Map();
+  function loadLocalModule(filename) {
+    assert.ok(["index.js", "database.js"].includes(filename), "只能加载收藏函数包中的两个本地模块");
+    if (localModules.has(filename)) return localModules.get(filename);
+    const output = filename === "index.js" ? exported : {};
+    localModules.set(filename, output);
+    const source = readFileSync(new URL("../cloudfunctions/favorites/" + filename, import.meta.url), "utf8");
+    const runModule = vm.runInContext("(function (exports, require) {\n" + source + "\n})", sandbox, {
+      filename: "cloudfunctions/favorites/" + filename,
+    });
+    runModule(output, (name) => {
+      if (name === "./database.js") return loadLocalModule("database.js");
       assert.equal(name, "tencentcloud-sdk-nodejs-common");
       moduleLoads++;
       return { CommonClient: FakeCommonClient };
-    },
-  });
+    });
+    return output;
+  }
+  loadLocalModule("index.js");
   return { exported, env, logs, clients, requests, authCalls, timeouts, get moduleLoads() { return moduleLoads; } };
 }
+
+test("收藏 POST：Day19 数据库操作独立在当前函数包，入口只保留请求/鉴权/响应", () => {
+  const indexSource = readFileSync(new URL("../cloudfunctions/favorites/index.js", import.meta.url), "utf8");
+  const databaseSource = readFileSync(new URL("../cloudfunctions/favorites/database.js", import.meta.url), "utf8");
+  const database = require("../cloudfunctions/favorites/database.js");
+  assert.match(indexSource, /require\("\.\/database\.js"\)/);
+  assert.doesNotMatch(indexSource, /ExecutePGSql|new CommonClient|function runtimeCredentials|INSERT INTO|function favoriteSql|function decodeResult/);
+  assert.match(indexSource, /function verifyAccessToken/);
+  assert.match(databaseSource, /ExecutePGSql/);
+  assert.match(databaseSource, /ON CONFLICT \(user_id, recipe_id\) DO NOTHING/);
+  assert.equal(typeof database.queryDatabase, "function");
+  assert.equal(typeof database.createFavorite, "function");
+  assert.doesNotMatch(databaseSource, /statusCode|Content-Type|exports\.main|verifyAccessToken|require\("\.\.\//);
+});
+
+test("收藏 POST：Day19 数据访问层保留 created/duplicate/notfound 结果及查询参数", async () => {
+  const database = require("../cloudfunctions/favorites/database.js");
+  const context = { environment: runtimeFields("VM_DAL_PRIVATE") };
+  const trace = () => {};
+  for (const outcome of ["created", "duplicate", "recipe_not_found"]) {
+    let calls = 0;
+    const result = await database.createFavorite(UID, RECIPE_ID, async (options, receivedTrace, receivedContext) => {
+      calls++;
+      assertWriteQuery(options);
+      assert.equal(receivedTrace, trace);
+      assert.equal(receivedContext, context);
+      return outcome === "created" ? created() : emptyOutcome(outcome);
+    }, trace, context);
+    assert.equal(calls, 1);
+    assert.deepEqual(result, outcome === "created"
+      ? { outcome, data: { user_id: UID, recipe_id: RECIPE_ID, created_at: CREATED_AT } }
+      : { outcome });
+  }
+});
 
 test("收藏 POST：使用已验证 UID 新增，并返回 HTTP 集成 JSON", async () => {
   const context = { environment: runtimeFields("VM_FORWARDED_PRIVATE") };
