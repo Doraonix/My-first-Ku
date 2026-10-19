@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { API_BASE_URL, loadRecipeData, normalizeRecipeData } from "../recipe-data.mjs";
+import { API_BASE_URL, loadRecipeData, loadFailureMessage, normalizeRecipeData } from "../recipe-data.mjs";
+
+const rejectsAs = (kind) => (error) => error instanceof Error && error.kind === kind;
 
 // 所有请求均由测试替身模拟；本文件的通过不代表已访问真库或公网接口。
 // 菜品资料只来自已审核的现有 JSON 和 seed.sql，不新增菜品内容。
@@ -240,7 +242,8 @@ test("任意一端失败均拒绝整次加载，不回退本地四道菜", async
           if (failure === "HTTP 失败") return response([], { ok: false, status: 500 });
           return response([], { json: async () => { throw new SyntaxError("模拟非法 JSON"); } });
         };
-        await assert.rejects(loadRecipeData(fetchImpl), Error);
+        const kind = { "网络异常": "network", "HTTP 失败": "server", "JSON 解析失败": "data" }[failure];
+        await assert.rejects(loadRecipeData(fetchImpl), rejectsAs(kind));
         assertRequests(calls);
       });
     }
@@ -254,7 +257,7 @@ test("快端成功后慢端失败也不能交付部分菜品", async () => {
   task.then(() => { settled = true; }, () => { settled = true; });
   await nextTurn();
   assert.equal(settled, false);
-  const rejection = assert.rejects(task, Error);
+  const rejection = assert.rejects(task, rejectsAs("network"));
   slow.reject(new Error("模拟慢端网络失败"));
   await rejection;
 });
@@ -271,7 +274,8 @@ test("JSON 外层必须 ok:true 且 data 为数组，任意接口形状异常都
         const { fetchImpl, calls } = failedUrl === recipeUrl
           ? createFetch(invalidResponse, response(materialRows))
           : createFetch(response(recipeRows), invalidResponse);
-        await assert.rejects(loadRecipeData(fetchImpl), Error);
+        // 服务端明确回 ok:false 算“云端报错”，其余外层形状不对算“资料不对”。
+        await assert.rejects(loadRecipeData(fetchImpl), rejectsAs(invalidPayload?.ok === false ? "server" : "data"));
         assertRequests(calls);
       });
     }
@@ -286,12 +290,37 @@ test("接口数据关联或字段异常拒绝加载，空双列表保持空结�
   });
   await t.test("材料有未知关联", async () => {
     const { fetchImpl } = createFetch(response(recipeRows), response([{ ...materialRows[0], recipe_id: "unknown" }]));
-    await assert.rejects(loadRecipeData(fetchImpl), Error);
+    await assert.rejects(loadRecipeData(fetchImpl), rejectsAs("data"));
   });
   await t.test("API 内部 steps 不是数组", async () => {
     const { fetchImpl } = createFetch(response([{ ...recipeRows[0], steps: "不是数组" }]), response(materialRows));
-    await assert.rejects(loadRecipeData(fetchImpl), Error);
+    await assert.rejects(loadRecipeData(fetchImpl), rejectsAs("data"));
   });
+});
+
+test("Day 23：三类读取失败对应三句给用户看的中文提示，未知类别用通用提示", () => {
+  assert.equal(loadFailureMessage({ kind: "network" }), "网络好像断开了，或者暂时连不上云端，请检查网络后刷新重试。");
+  assert.equal(loadFailureMessage({ kind: "server" }), "云端服务暂时出了点问题，请稍后刷新重试。");
+  assert.equal(loadFailureMessage({ kind: "data" }), "菜品资料暂时读取异常，请稍后刷新重试。");
+  for (const error of [undefined, null, new Error("x"), { kind: "unknown" }, { kind: "constructor" }, { kind: "toString" }, { kind: 1 }]) {
+    assert.equal(loadFailureMessage(error), "菜品资料未能加载，请稍后刷新重试。");
+  }
+  for (const message of ["network", "server", "data"].map((kind) => loadFailureMessage({ kind }))) {
+    assert.match(message, /[一-鿿]/);
+    assert.doesNotMatch(message, /Failed to fetch|SyntaxError|TypeError|接口|部署/);
+  }
+});
+
+test("Day 23：原始错误保留在 cause 中，仅供控制台排查", async () => {
+  const offline = new TypeError("模拟网络异常");
+  await assert.rejects(loadRecipeData(async () => { throw offline; }),
+    (error) => error.kind === "network" && error.cause === offline);
+  const badJson = new SyntaxError("模拟非法 JSON");
+  await assert.rejects(loadRecipeData(async () => response([], { json: async () => { throw badJson; } })),
+    (error) => error.kind === "data" && error.cause === badJson);
+  const { fetchImpl } = createFetch(response(recipeRows), response([{ ...materialRows[0], recipe_id: "unknown" }]));
+  await assert.rejects(loadRecipeData(fetchImpl),
+    (error) => error.kind === "data" && error.cause instanceof Error && error.message === error.cause.message);
 });
 
 test("每次加载都重新读取两个接口，不复用上次结果", async () => {

@@ -61,17 +61,52 @@ export function normalizeRecipeData(recipeRows, materialRows) {
   return { recipes };
 }
 
+// Day 23：读取失败分三类（连不上 / 云端报错 / 资料不对），页面按类别显示给用户看的中文提示。
+// 只给错误加类别，不改变加载与校验规则；原始错误保留在 cause 中，仅供控制台排查。
+const LOAD_FAILURE_MESSAGES = Object.freeze({
+  network: "网络好像断开了，或者暂时连不上云端，请检查网络后刷新重试。",
+  server: "云端服务暂时出了点问题，请稍后刷新重试。",
+  data: "菜品资料暂时读取异常，请稍后刷新重试。",
+});
+const DEFAULT_LOAD_FAILURE_MESSAGE = "菜品资料未能加载，请稍后刷新重试。";
+
+function loadError(kind, message, cause) {
+  const error = cause === undefined ? new Error(message) : new Error(message, { cause });
+  error.kind = kind;
+  return error;
+}
+
+export function loadFailureMessage(error) {
+  return Object.hasOwn(LOAD_FAILURE_MESSAGES, error?.kind)
+    ? LOAD_FAILURE_MESSAGES[error.kind] : DEFAULT_LOAD_FAILURE_MESSAGE;
+}
+
 export async function loadRecipeData(fetchImpl = globalThis.fetch) {
   const read = async (path) => {
-    const response = await fetchImpl(new URL(path, API_BASE_URL), {
-      method: "GET", cache: "no-store", credentials: "omit",
-    });
-    if (!response.ok) throw new Error("云端读接口请求失败。");
-    const payload = await response.json();
-    if (payload?.ok !== true || !Array.isArray(payload.data)) throw new Error("云端读接口资料格式不正确。");
+    let response;
+    try {
+      response = await fetchImpl(new URL(path, API_BASE_URL), {
+        method: "GET", cache: "no-store", credentials: "omit",
+      });
+    } catch (error) {
+      throw loadError("network", "无法连接云端读接口。", error);
+    }
+    if (!response.ok) throw loadError("server", "云端读接口请求失败。");
+    let payload;
+    try {
+      payload = await response.json();
+    } catch (error) {
+      throw loadError("data", "云端读接口返回的不是有效资料。", error);
+    }
+    if (payload?.ok === false) throw loadError("server", "云端读接口返回了错误结果。");
+    if (payload?.ok !== true || !Array.isArray(payload.data)) throw loadError("data", "云端读接口资料格式不正确。");
     return payload.data;
   };
   // 两条接口都成功后才提交给页面，防止用部分材料生成错误推荐。
   const [recipes, materials] = await Promise.all([read("/api/recipes"), read("/api/recipe-materials")]);
-  return normalizeRecipeData(recipes, materials);
+  try {
+    return normalizeRecipeData(recipes, materials);
+  } catch (error) {
+    throw loadError("data", error.message, error);
+  }
 }

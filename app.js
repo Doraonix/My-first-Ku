@@ -1,6 +1,6 @@
 import { recommendRecipes, getRecipeAvailability } from "./recommendations.mjs";
 import { readFavorites, saveFavorite } from "./favorites.mjs";
-import { loadRecipeData } from "./recipe-data.mjs";
+import { loadRecipeData, loadFailureMessage } from "./recipe-data.mjs";
 
 const filters = document.querySelector("#recipe-filters");
 const recommendButton = document.querySelector("#recommend-button");
@@ -23,6 +23,9 @@ const exitStatePreview = document.querySelector("#exit-state-preview");
 const previewMode = import.meta.env?.DEV === true
   && ["localhost", "127.0.0.1", "[::1]"].includes(window.location.hostname)
   ? new URLSearchParams(window.location.search).get("state-preview") : null;
+// 本机开发演示：error 不指定类别；另外三种分别模拟连不上、云端报错、资料不对。
+const errorPreviewKinds = { error: undefined, "error-network": "network", "error-server": "server", "error-data": "data" };
+const errorPreview = Object.hasOwn(errorPreviewKinds, previewMode);
 const views = {
   home: document.querySelector("#home-view"),
   detail: document.querySelector("#recipe-detail"),
@@ -46,7 +49,7 @@ let recipeLoadFailed = false;
 let recipeUnavailableMessage = "菜品资料未加载，暂时无法查看详情。";
 
 function updateStatePreviewExit() {
-  if (previewMode !== "loading" && previewMode !== "error") return;
+  if (previewMode !== "loading" && !errorPreview) return;
   const exitUrl = new URL(window.location.href);
   exitUrl.searchParams.delete("state-preview");
   exitStatePreview.href = exitUrl.href;
@@ -381,7 +384,11 @@ detailFavoriteRetry.addEventListener("click", retryFavorite);
 async function loadRecipes() {
   if (previewMode === "loading") return;
   try {
-    if (previewMode === "error") throw new Error("状态演示：模拟菜品资料读取失败");
+    if (errorPreview) {
+      const error = new Error("状态演示：模拟菜品资料读取失败");
+      error.kind = errorPreviewKinds[previewMode];
+      throw error;
+    }
     const data = await loadRecipeData();
     recipes = data.recipes;
     dataSourceNote.textContent = `数据来源：云端读接口；本次加载 ${recipes.length} 道菜。`;
@@ -411,7 +418,7 @@ async function loadRecipes() {
   } catch (error) {
     recipeLoadFailed = true;
     previewNotice.hidden = false;
-    previewNotice.textContent = "菜品资料未能加载，请确认读接口已部署并允许此页面访问，再刷新重试。";
+    previewNotice.textContent = loadFailureMessage(error);
     dataSourceNote.textContent = "数据来源：云端读接口；本次加载失败，未使用示例数据。";
     document.getElementById("main-ingredients").replaceChildren(
       element("p", "field-note", "主要食材未能加载，请刷新页面重试。"),
@@ -423,11 +430,11 @@ async function loadRecipes() {
     favoriteStatus.textContent = "菜品资料未加载，暂时无法显示收藏。";
     resetRecipeDetail("菜品资料未加载，暂时无法查看详情。");
     renderRoute(false);
-    if (previewMode !== "error") console.error("菜品资料加载失败：", error);
+    if (!errorPreview) console.error("菜品资料加载失败：", error);
   }
 }
 
-if (previewMode === "loading" || previewMode === "error") {
+if (previewMode === "loading" || errorPreview) {
   statePreviewNotice.hidden = false;
   statePreviewText.textContent = previewMode === "loading"
     ? "状态演示：加载中。此页面会停留在加载状态，方便核对；点击退出演示可恢复正常使用。"
