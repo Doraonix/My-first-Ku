@@ -581,3 +581,104 @@ RetMsg 的业务 statusCode409、ok=false、FAVORITE_EXISTS/固定中文提示�
 学员明确回复“两张已保存，确认提交这7个文件”，确认保存并授权此前7文件提交/推送。保存依据自述，AI已见数据库行图但未见201图片，不称代保存、201图片已核验或作业已发群。源码/测试/依赖不变，三个真实功能闭环及旧504未知原因保留，不重发请求或改表/权限/超时。
 
 执行前核对main、Day17 HEAD、既有origin与空暂存区，文件范围仍是第8.25节的7个Day18文件；USER_TEST.md和Day16资料保留原样，受保护4文件SHA256不变，有限秘密字面模式扫描未匹配，沿用395项模拟测试不重复跑。按确认标题和两行说明精确暂存、检查后提交推送；此处只记录授权与执行前状态，不提前写Git成功，实际结果以Git历史和远端main为准。完成后停下，不开始下一天。
+
+## 9. Day 22 板块①｜本人收藏 GET / 单条备注 PATCH（仅本地准备）
+
+截至本小步：源码、迁移准备与本地替身测试已完成，云端尚未执行迁移或部署。旧 POST 的历史契约/证据保留，不将以下拟上线能力写成已经真实可用；DELETE 尚未实现，不授予删除权限。网页收藏仍为 localStorage，不新增登录页面或云同步。
+
+### 9.1 查询当前登录用户收藏
+
+```http
+GET /api/favorites
+Authorization: Bearer <当前用户的access_token>
+```
+
+可选 `?recipe_id=recipe_SYN_22`，编号规则沿用 1–64 个 ASCII 字母、数字、下划线、连字符；不自动修剪。查询对象只允许 recipe_id，不接受调用者提供 user_id、角色、SQL、数组或批量编号；若网关同时提供多值参数，必须是单个合法值且与单值一致。GET 只接受空/缺失 body，不以请求 body 或 context 决定归属。
+
+每次官方 introspect 验证后，从 sub 取得合法字符串 UID，固定 SELECT 只读此 UID 的 favorites；可选编号进一步精确过滤。成功 HTTP 200，根仅 ok/data，data 为数组，每行恰为 user_id、recipe_id、created_at、note；created_at 为 ISO UTC 毫秒字符串。无记录时为 `{"ok":true,"data":[]}`，不是读取失败；按编号过滤至多一行，不返回其他用户行或重复编号。新读取角色仍是内部 service_role，不对匿名或 authenticated 开放表权限。
+
+### 9.2 修改一条收藏的备注
+
+```http
+PATCH /api/favorites
+Content-Type: application/json
+Authorization: Bearer <当前用户的access_token>
+
+{"recipe_id":"recipe_SYN_22","note":"备注 B"}
+```
+
+以上编号、备注为契约示例，不是实际写入证据。JSON 仅允许 recipe_id/note，两者必须提供；note 必须为字符串，空字符串表示清空，最多 200 个 Unicode 码点，不接受 C0/C1 控制字符或孤立 UTF-16 surrogate。沿用 1024 UTF-8 字节 body 上限及 JSON/base64/object 解码规则；不能修改 user_id、recipe_id、created_at，也不允许数组/批量请求。recipe_id 只用于精确定位这条收藏，不是要改写的列。
+
+重新验证当前令牌后，一句固定 UPDATE 只修改 note，WHERE 同时包含服务端已验 UID 与合法 recipe_id，不先查再更新。成功 HTTP 200，根仅 ok/data，data 为单个四字段收藏对象，note 为本次新值，原主键及创建时间不变；若本人名下无该收藏，零行返回 HTTP 404/FAVORITE_NOT_FOUND，不泄露别人的记录是否存在。[UPDATE / RETURNING 与读列权限](https://www.postgresql.org/docs/17/sql-update.html)
+
+SDK 通道仍只使用固定 EnvId/Sql/Role；官方输入参数未列绑定值数组。本实现把已校验备注编码为仅 0–9/a–f 的 UTF-8 hex，通过 `convert_from(decode(hex,'hex'),'UTF8')` 还原；备注原文不进入 SQL 语法。这是固定 SQL + 编码隔离，不冒称参数绑定，也不让请求改变角色/表名/SQL。[ExecutePGSql 参数](https://cloud.tencent.com/document/product/876/130469)、[PG17 hex/编码转换](https://www.postgresql.org/docs/17/functions-binarystring.html)
+
+### 9.3 新错误与保留行为
+
+| HTTP | code | 中文 message |
+| --- | --- | --- |
+| 400 | INVALID_QUERY | 查询只允许一个有效的 recipe_id。 |
+| 400 | GET_BODY_NOT_ALLOWED | GET 请求不能携带收藏内容。 |
+| 400 | PATCH_FIELDS_INVALID | PATCH 请求只允许 recipe_id 和 note 字段。 |
+| 400 | NOTE_REQUIRED | 请填写收藏备注 note。 |
+| 400 | NOTE_INVALID | 备注须为不含控制字符的文本，最多 200 个字符。 |
+| 404 | FAVORITE_NOT_FOUND | 未找到你的这条收藏。 |
+| 405 | METHOD_NOT_ALLOWED | 只支持 GET、POST 或 PATCH 请求。 |
+| 500 | FAVORITE_READ_FAILED | 暂时无法读取收藏，请稍后重试。 |
+
+405 的 Allow 为 `GET, POST, PATCH`。其他错误沿用第 8 节，包括 PATCH 库失败的 FAVORITE_WRITE_FAILED、401 身份拒绝和 503 认证不可用；响应仍为 JSON UTF-8、no-store、ok=false/error(code,message)。调用不自动重试；PATCH 的 SQL 已执行后若超时/解码失败，状态可能不确定，必须先 GET 或管理员 SELECT 读回，不因 500 认定未修改。
+
+POST 仍仅收 recipe_id、成功 HTTP 201 的原三字段 DTO，不自填 note；备注由新列默认空字符串生成，重复拒绝不会改时间或备注。本地 DELETE、PUT 等仍为 405，不把方法拒绝称删除完成。新 GET 部署前的旧 405 探测脚本只适用于当时旧源码，不能拿它验收新版读取。
+
+### 9.4 迁移准备与验证边界
+
+`db/day22-favorites-note.sql` 新增 `note text NOT NULL DEFAULT ''` 和字符 CHECK；只向既有内部角色授予 `UPDATE(note)`，保留 SELECT/INSERT，不授予表 UPDATE/DELETE，不新建角色、不修改原表的三个字段/约束/RLS/零公开策略。表级 UPDATE=false 而 note 的列级 UPDATE=true 是预期，不通过额外授权“修正”。service_role 绕过 RLS，业务归属继续由逐请求身份验证和 UID 条件保障；该内部身份不能交给浏览器。[列级授权](https://www.postgresql.org/docs/17/sql-grant.html)
+
+脚本按编号一次一段：只读前置全部核对且本人另行确认后，才执行一次守护 DO 块，再逐段读回。DO 检查精确数据库/管理员、UTF8、原三列/约束/有效权限、RLS/策略及无继承结构；note 已存在、结构不符或锁冲突即停止。ALTER/GRANT/后核对在同段，异常不吞掉、整段回滚，不重跑旧 Day 18 建表脚本或删除已有收藏。当前没有真实 PostgreSQL 执行结果，不把静态语法核对称迁移通过。
+
+实际本地收藏测试 78 项、全项目 npm test 436 项均通过，网络、认证、SDK、数据库和 DOM 为替身；两个函数与测试文件 node --check 通过，独立只读安全复核无阻断。本人之前回传的新身份 GET 405 仅支持旧函数方法检查已抵达；Day 21 的旧 POST 401 根因及 FAIL 不改写。云端迁移、部署、真实 PATCH 前后值对比与后续 DELETE/完整 CRUD 仍待授权分步执行。
+
+## 10. Day 22 续｜DELETE 契约与真实验证（2026-10-19 补记）
+
+本节补记第 9 节之后的变化。第 9 节保留为 10-14 本地准备阶段的历史记录，其中“DELETE 尚未实现，不授予删除权限”“本地 DELETE、PUT 等仍为 405”、9.3 的 405 三方法文案与 Allow，以及 9.4 的“不授予表 DELETE”已由本节取代：9.4 的说法只指 note 脚本，内部 service_role 此后经学员另行授权增加 DELETE（前置 23 项、后置 40 项核对均 matches=true），不要据旧文撤销。第 9 节的 78/436 项测试数为当时结果，交接时实测收藏 109 项、全项目 467 项（替身测试）。下文“交接文档”指本地交接文件 CODEX_HANDOFF.md（学员确认不入库），关键事实已摘入 README“Day 22 续”。
+
+### 10.1 允许的方法
+
+现为 GET、POST、PATCH、DELETE。其他方法返回 405/METHOD_NOT_ALLOWED，message 为“只支持 GET、POST、PATCH 或 DELETE 请求。”，Allow 为 `GET, POST, PATCH, DELETE`。
+
+### 10.2 删除本人的一条收藏
+
+```http
+DELETE /api/favorites?recipe_id=recipe-003
+Authorization: Bearer <当前用户的access_token>
+```
+
+- 必须带一个合法 recipe_id 查询参数（编号规则同 9.1），只接受空或缺失 body。缺少 recipe_id 为 RECIPE_ID_REQUIRED；空值、格式不符、数组或额外键为 INVALID_QUERY。网关提供多值参数时须为单个值且与单值一致；提供原始查询串时须恰好一个 recipe_id 键值且与单值一致，重复键或额外字段都拒绝。两者都未提供时，无法识别原 URL 中被网关合并的重复键。
+- 校验顺序为方法、请求体、查询参数、Bearer 格式、身份、单句 SQL；405/400/401/503 都在执行 SQL 前结束，401/503 身份错误沿用第 8 节。
+- 每次官方 introspect 验证后，固定 SQL 只删除“已验 UID＋该 recipe_id”这一行：`WITH deleted AS (DELETE … RETURNING user_id, recipe_id) SELECT user_id, recipe_id FROM deleted;`。严格核对返回的两列及 UID/编号，不以 AffectedRows 判断成功；不先查再删，不自动重试。只删收藏，不删 recipes 中的菜；不是软删除或批量删除。
+- 成功 HTTP 200：`{"ok":true,"data":{"recipe_id":"recipe-003","deleted":true}}`（不是 204）。本人名下没有这条收藏时返回 404/FAVORITE_NOT_FOUND，不泄露别人的记录是否存在。
+
+| HTTP | code | 中文 message |
+| --- | --- | --- |
+| 400 | RECIPE_ID_REQUIRED | 请填写菜品编号 recipe_id。 |
+| 400 | INVALID_QUERY | 查询只允许一个有效的 recipe_id。 |
+| 400 | DELETE_BODY_NOT_ALLOWED | DELETE 请求不能携带请求体，请在查询参数中指定 recipe_id。 |
+| 404 | FAVORITE_NOT_FOUND | 未找到你的这条收藏。 |
+| 500 | FAVORITE_DELETE_FAILED | 无法确认删除结果，请先核对收藏状态，不要立即重复删除。 |
+
+500 或超时时删除可能已经发生：先 GET 或管理员 SELECT 读回，不自动、不立即重发。上表错误码与 10.1 的 405 目前只有替身测试，真实请求只验证了 DELETE 200 成功路径。
+
+### 10.3 PATCH 结果解码的修正
+
+最初的真实 PATCH 已改动备注却返回 500 FAVORITE_WRITE_FAILED；10-16 受控日志定位为结果形状解码失败，不是超时。之后改为单条 `WITH updated AS (UPDATE … RETURNING …) SELECT … FROM updated;`，仍只读本次 RETURNING、不另查表、不放松校验。请求与 200 响应契约同 9.2，不变。
+
+### 10.4 Day 22 真实验证记录
+
+| 操作 | 证据 | 来源 |
+| --- | --- | --- |
+| GET | 10-15 业务 200、3 条；10-19 删除前 200、3 条与基线一致；删除后 200、只剩 2 条 | 交接文档 §7.1；学员终端回执 |
+| PATCH | 最初 PATCH 已改备注但返回 500；修复后 10-16 同值 PATCH 200（响应链路验证）及独立 GET 200（3 行一致）；SQL 见备注为“Day22备注验证” | 交接文档 §7.2 |
+| DELETE | 10-19 一次 DELETE 200、deleted:true；管理员 SQL 删除前 3/3/0、删除后 2/2/0；本人 GET 不再返回 recipe-003 | 学员终端与 SQL 回执 |
+| POST | Day 18/19 真实 201；Day 21 POST 401 仍为 FAIL；Day 22 recipe-003 的 POST 为 504，SQL 证实 0→1、总数 2→3，无新的 201 | 第 8 节；README Day 19；WEEK3_ACCEPTANCE.md；交接文档 §7.2 |
+
+RequestId 与时间见 README 的“Day 22 续”。只有一个真实测试账号，跨用户隔离没有双账号实测；数据库 DELETE 授权段未存入仓库，不凭空补写。
