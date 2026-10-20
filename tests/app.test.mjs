@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { recommendRecipes, getRecipeAvailability } from '../recommendations.mjs';
 import { FAVORITES_KEY, readFavorites, saveFavorite } from '../favorites.mjs';
-import { API_BASE_URL, loadRecipeData, loadFailureMessage } from '../recipe-data.mjs';
+import { API_BASE_URL, loadRecipeData } from '../recipe-data.mjs';
 
 // 原四道已审核资料只作回归测试 fixture，应用加载仍经过真实的两读接口适配器。
 const data = JSON.parse(readFileSync(new URL('../data/recipes.json', import.meta.url), 'utf8'));
@@ -68,7 +68,7 @@ function applicationScript(dev = false) {
   const script = readFileSync(appUrl, 'utf8')
     .replace(/^import \{ recommendRecipes, getRecipeAvailability \} from "\.\/recommendations\.mjs";\r?\n/m, '')
     .replace(/^import \{ readFavorites, saveFavorite \} from "\.\/favorites\.mjs";\r?\n/m, '')
-    .replace(/^import \{ loadRecipeData, loadFailureMessage \} from "\.\/recipe-data\.mjs";\r?\n/m, '')
+    .replace(/^import \{ loadRecipeData \} from "\.\/recipe-data\.mjs";\r?\n/m, '')
     .replaceAll('import.meta.env?.DEV', String(dev))
     .replaceAll('import.meta.url', JSON.stringify(appUrl.href));
   assert.ok(!/^import /m.test(script), '模拟执行只应移除三条已知模块 import');
@@ -295,7 +295,7 @@ async function bootApiPage(storage, {
     document, window, URL, URLSearchParams, recommendRecipes, getRecipeAvailability,
     readFavorites: (validIds) => readFavorites(validIds, () => observedStorage),
     saveFavorite: (validIds, id, shouldSave) => saveFavorite(validIds, id, shouldSave, () => observedStorage),
-    loadRecipeData: () => loadRecipeData(mockFetch), loadFailureMessage, fetch: mockFetch,
+    loadRecipeData: () => loadRecipeData(mockFetch), fetch: mockFetch,
     console: { error() {} },
   }, { filename: appUrl.pathname });
   await new Promise(setImmediate);
@@ -1011,26 +1011,6 @@ test('真实 app.js 的详情与收藏连接（仅内存 DOM 和存储）', asyn
     page.byId('favorites-list').querySelector('button').click();
     await checkSkip('recipe-detail');
   });
-
-  await t.test('Day 24：收藏页双击取消收藏只取消当前这道，补位上来的下一道保留', async () => {
-    const storage = makeStorage('["recipe-002","recipe-001","recipe-003"]');
-    const page = await boot(storage);
-    page.byId('nav-favorites').click();
-    // 内存 DOM 没有布局：每次取第一张卡片的取消按钮，模拟删除后下一张卡片补位到鼠标下方。
-    const firstRemove = () => page.byId('favorites-list').querySelector('article')
-      .querySelectorAll('button').find((button) => button.textContent === '取消收藏');
-    const shownIds = () => page.byId('favorites-list').querySelectorAll('article').map((card) => card.dataset.recipeId);
-    // 第二下与第一下相隔 900 毫秒（Edge 实测仍算连击），应被忽略。
-    firstRemove().click({ timeStamp: 10 });
-    firstRemove().click({ timeStamp: 910 });
-    assert.deepEqual(JSON.parse(storage.getItem(FAVORITES_KEY)), ['recipe-001', 'recipe-003']);
-    assert.deepEqual(shownIds(), ['recipe-001', 'recipe-003']);
-    assert.equal(page.byId('favorites-status').textContent, '已取消收藏：青椒土豆丝。');
-    // 距上次取消超过 1 秒的单击照常生效。
-    firstRemove().click({ timeStamp: 1110 });
-    assert.deepEqual(JSON.parse(storage.getItem(FAVORITES_KEY)), ['recipe-003']);
-    assert.deepEqual(shownIds(), ['recipe-003']);
-  });
 });
 
 test('Day 13：本地开发状态演示（真实应用脚本与 HTML，内存 DOM 和存储）', async (t) => {
@@ -1127,31 +1107,8 @@ test('Day 13：本地开发状态演示（真实应用脚本与 HTML，内存 DO
     assert.deepEqual([...storage.entries], saved);
   });
 
-  await t.test('Day 23：三类错误演示分别显示连不上、云端报错、资料不对的中文提示', async () => {
-    const expected = {
-      'error-network': '网络好像断开了，或者暂时连不上云端，请检查网络后刷新重试。',
-      'error-server': '云端服务暂时出了点问题，请稍后刷新重试。',
-      'error-data': '菜品资料暂时读取异常，请稍后刷新重试。',
-    };
-    for (const [mode, message] of Object.entries(expected)) {
-      const storage = makeStorage('["recipe-001"]');
-      const saved = [...storage.entries];
-      const page = await boot(storage, { url: `http://localhost:5173/?state-preview=${mode}#home` });
-      assertVisible(page.byId('state-preview-notice'));
-      assert.match(page.byId('state-preview-text').textContent, /状态演示.*加载失败/);
-      assert.equal(page.byId('preview-notice').hidden, false);
-      assert.equal(page.byId('preview-notice').textContent, message);
-      assert.equal(page.byId('main-ingredients').textContent, '主要食材未能加载，请刷新页面重试。');
-      assert.equal(page.byId('results-note').textContent, '资料未加载，暂时无法生成推荐。');
-      assertDisabled(page);
-      assert.deepEqual(page.calls, { requests: [], reads: [], writes: [] });
-      assert.deepEqual([...storage.entries], saved);
-      assert.ok(!new URL(page.byId('exit-state-preview').href).searchParams.has('state-preview'));
-    }
-  });
-
   await t.test('两种演示的退出地址只移除演示参数，保留其他参数和导航后的当前 hash', async () => {
-    for (const mode of ['loading', 'error', 'error-network', 'error-server', 'error-data']) {
+    for (const mode of ['loading', 'error']) {
       const page = await boot(makeStorage(), {
         url: `http://localhost:5173/demo/?state-preview=${mode}&theme=light&tag=a&tag=b#favorites`,
       });
@@ -1174,7 +1131,7 @@ test('Day 13：本地开发状态演示（真实应用脚本与 HTML，内存 DO
 
   await t.test('非开发环境或非本机地址忽略两种演示参数，仍读取两读接口和原收藏', async () => {
     for (const [dev, host] of [[false, 'localhost'], [true, 'example.test']]) {
-      for (const mode of ['loading', 'error', 'error-network', 'error-server', 'error-data']) {
+      for (const mode of ['loading', 'error']) {
         const storage = makeStorage('["recipe-001"]');
         const saved = [...storage.entries];
         const page = await boot(storage, { dev, url: `http://${host}/?state-preview=${mode}#favorites` });
@@ -1187,7 +1144,7 @@ test('Day 13：本地开发状态演示（真实应用脚本与 HTML，内存 DO
   });
 
   await t.test('空值、未知值和大小写不同的演示参数均正常加载', async () => {
-    for (const mode of ['', 'unknown', 'Loading', 'error-', 'Error-network', 'error-unknown', 'constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+    for (const mode of ['', 'unknown', 'Loading']) {
       const page = await boot(makeStorage(), { url: `http://localhost/?state-preview=${mode}#home` });
       assertNormalLoad(page);
       assertView(page, 'home-view');
@@ -1293,10 +1250,8 @@ test('菜品加载中清空按钮禁用，直接派发点击也不掩盖加载�
 
 test('菜品加载失败时食材区不再停留在加载中', async (t) => {
   const scenarios = [
-    { name: '请求被拒绝', id: 'rejected', fetch: async () => { throw new Error('模拟网络失败'); },
-      notice: '网络好像断开了，或者暂时连不上云端，请检查网络后刷新重试。' },
-    { name: 'HTTP 返回失败', id: 'http', fetch: async () => ({ ok: false, status: 503 }),
-      notice: '云端服务暂时出了点问题，请稍后刷新重试。' },
+    { name: '请求被拒绝', id: 'rejected', fetch: async () => { throw new Error('模拟网络失败'); } },
+    { name: 'HTTP 返回失败', id: 'http', fetch: async () => ({ ok: false, status: 503 }) },
   ];
   for (const scenario of scenarios) await t.test(scenario.name, async (t) => {
     const descriptors = Object.fromEntries(['document', 'fetch', 'localStorage', 'window'].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
@@ -1323,7 +1278,7 @@ test('菜品加载失败时食材区不再停留在加载中', async (t) => {
     assert.equal(byId('seasonings').textContent, '调料未能加载，请刷新页面重试。');
     for (const id of ['main-ingredients', 'seasonings']) assert.ok(!byId(id).textContent.includes('正在加载'));
     assert.equal(byId('preview-notice').hidden, false);
-    assert.equal(byId('preview-notice').textContent, scenario.notice);
+    assert.match(byId('preview-notice').textContent, /菜品资料未能加载/);
     assert.ok(byId('recipe-filters').querySelectorAll('fieldset').every((fieldset) => fieldset.disabled));
     assert.equal(byId('recommend-button').disabled, true);
     assert.equal(byId('clear-filters-button').disabled, true);
@@ -1410,21 +1365,15 @@ test('Day 17：页面从两云端读接口获取资料，保留原推荐与本�
     recipes: seedApiData.recipes,
     materials: seedApiData.materials.filter((material) => material.recipe_id !== 'recipe-005'),
   };
-  // Day 23：页面提示按失败类别区分；连不上 / 云端报错 / 资料不对各一句。
-  const notices = {
-    network: '网络好像断开了，或者暂时连不上云端，请检查网络后刷新重试。',
-    server: '云端服务暂时出了点问题，请稍后刷新重试。',
-    data: '菜品资料暂时读取异常，请稍后刷新重试。',
-  };
   const scenarios = apiPaths.flatMap((path) => [
-    { name: `${path} 单独 HTTP 失败`, path, kind: 'server', failure: async () => ({ ok: false, status: 503 }) },
-    { name: `${path} 单独返回 ok:false`, path, kind: 'server', failure: async () => ({ ok: true, json: async () => ({ ok: false, data: [] }) }) },
+    { name: `${path} 单独 HTTP 失败`, path, failure: async () => ({ ok: false, status: 503 }) },
+    { name: `${path} 单独返回 ok:false`, path, failure: async () => ({ ok: true, json: async () => ({ ok: false, data: [] }) }) },
   ]);
   scenarios.push(
-    { name: '菜品接口网络异常', path: '/api/recipes', kind: 'network', failure: async () => { throw new Error('模拟单接口网络失败'); } },
-    { name: '材料接口 JSON 解析异常', path: '/api/recipe-materials', kind: 'data', failure: async () => ({ ok: true, json: async () => { throw new SyntaxError('模拟 JSON 解析失败'); } }) },
-    { name: '菜品资料格式异常', path: '/api/recipes', kind: 'data', failure: async (request) => successfulResponse(request, invalidRecipeFixture) },
-    { name: '材料接口缺少第五道主要食材', path: '/api/recipe-materials', kind: 'data', failure: async (request) => successfulResponse(request, incompleteMaterialsFixture) },
+    { name: '菜品接口网络异常', path: '/api/recipes', failure: async () => { throw new Error('模拟单接口网络失败'); } },
+    { name: '材料接口 JSON 解析异常', path: '/api/recipe-materials', failure: async () => ({ ok: true, json: async () => { throw new SyntaxError('模拟 JSON 解析失败'); } }) },
+    { name: '菜品资料格式异常', path: '/api/recipes', failure: async (request) => successfulResponse(request, invalidRecipeFixture) },
+    { name: '材料接口缺少第五道主要食材', path: '/api/recipe-materials', failure: async (request) => successfulResponse(request, incompleteMaterialsFixture) },
   );
   for (const scenario of scenarios) await t.test(`${scenario.name}：整页保护，不回退本地资料或改动收藏`, async () => {
     const storage = makeStorage('["recipe-005"]');
@@ -1440,7 +1389,7 @@ test('Day 17：页面从两云端读接口获取资料，保留原推荐与本�
     assertView(page, 'recipe-detail');
     assert.equal(page.byId('data-source-note').textContent, '数据来源：云端读接口；本次加载失败，未使用示例数据。');
     assert.equal(page.byId('preview-notice').hidden, false);
-    assert.equal(page.byId('preview-notice').textContent, notices[scenario.kind]);
+    assert.equal(page.byId('preview-notice').textContent, '菜品资料未能加载，请确认读接口已部署并允许此页面访问，再刷新重试。');
     assert.equal(page.byId('main-ingredients').textContent, '主要食材未能加载，请刷新页面重试。');
     assert.equal(page.byId('seasonings').textContent, '调料未能加载，请刷新页面重试。');
     assert.equal(page.byId('results-note').textContent, '资料未加载，暂时无法生成推荐。');
