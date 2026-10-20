@@ -1011,6 +1011,26 @@ test('真实 app.js 的详情与收藏连接（仅内存 DOM 和存储）', asyn
     page.byId('favorites-list').querySelector('button').click();
     await checkSkip('recipe-detail');
   });
+
+  await t.test('Day 24：收藏页双击取消收藏只取消当前这道，补位上来的下一道保留', async () => {
+    const storage = makeStorage('["recipe-002","recipe-001","recipe-003"]');
+    const page = await boot(storage);
+    page.byId('nav-favorites').click();
+    // 内存 DOM 没有布局：每次取第一张卡片的取消按钮，模拟删除后下一张卡片补位到鼠标下方。
+    const firstRemove = () => page.byId('favorites-list').querySelector('article')
+      .querySelectorAll('button').find((button) => button.textContent === '取消收藏');
+    const shownIds = () => page.byId('favorites-list').querySelectorAll('article').map((card) => card.dataset.recipeId);
+    // 第二下与第一下相隔 900 毫秒（Edge 实测仍算连击），应被忽略。
+    firstRemove().click({ timeStamp: 10 });
+    firstRemove().click({ timeStamp: 910 });
+    assert.deepEqual(JSON.parse(storage.getItem(FAVORITES_KEY)), ['recipe-001', 'recipe-003']);
+    assert.deepEqual(shownIds(), ['recipe-001', 'recipe-003']);
+    assert.equal(page.byId('favorites-status').textContent, '已取消收藏：青椒土豆丝。');
+    // 距上次取消超过 1 秒的单击照常生效。
+    firstRemove().click({ timeStamp: 1110 });
+    assert.deepEqual(JSON.parse(storage.getItem(FAVORITES_KEY)), ['recipe-003']);
+    assert.deepEqual(shownIds(), ['recipe-003']);
+  });
 });
 
 test('Day 13：本地开发状态演示（真实应用脚本与 HTML，内存 DOM 和存储）', async (t) => {

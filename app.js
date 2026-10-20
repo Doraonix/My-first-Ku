@@ -47,6 +47,7 @@ let currentView = "home";
 let renderedHash = null;
 let recipeLoadFailed = false;
 let recipeUnavailableMessage = "菜品资料未加载，暂时无法查看详情。";
+let lastRemoveTime = -Infinity;
 
 function updateStatePreviewExit() {
   if (previewMode !== "loading" && !errorPreview) return;
@@ -332,7 +333,10 @@ function renderFavorites() {
     remove.type = "button";
     remove.disabled = !favoritesReadable;
     remove.setAttribute("aria-label", `取消收藏${recipe.name}`);
-    remove.addEventListener("click", () => {
+    remove.addEventListener("click", (event) => {
+      // 双击的第二下会落到补位上来的下一张卡片：距上次取消不到 1 秒（Edge 实测 0.9 秒仍算连击）的点击不执行。
+      if (event.timeStamp - lastRemoveTime < 1000) return;
+      lastRemoveTime = event.timeStamp;
       changeFavorite(id, false);
       document.querySelector("#favorites-heading").focus();
     });
